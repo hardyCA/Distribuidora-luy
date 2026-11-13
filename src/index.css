@@ -1,0 +1,302 @@
+@import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+
+/* Soporte de Dark Mode por clase .dark en <html> (Tailwind v4) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #f8fafc;
+    color: #0f172a;
+    margin: 0;
+    padding: 0;
+    -webkit-tap-highlight-color: transparent;
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+
+  html.dark body {
+    background-color: #0B0D11;
+    color: #f1f5f9;
+  }
+}
+
+/* Adaptación global e inteligente de superficies para Modo Oscuro (Estilo Linear / Fintech) */
+html.dark .bg-\[\#F6F5F2\] {
+  background-color: #161922 !important;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+html.dark .hover\:bg-\[\#EFECE6\]:hover {
+  background-color: #1C202B !important;
+}
+
+html.dark .bg-\[\#F3EFE8\],
+html.dark .bg-\[\#EFECE6\],
+html.dark .bg-\[\#EFECE6\]\/70 {
+  background-color: #1E2230 !important;
+}
+
+/* Superficies blancas -> paneles oscuros #161922 o controles #11141B */
+html.dark .bg-white {
+  background-color: #161922;
+  color: #f1f5f9;
+}
+
+html.dark .bg-white\/90,
+html.dark .bg-white\/95 {
+  background-color: rgba(17, 20, 27, 0.92);
+}
+
+html.dark .bg-white\/85,
+html.dark .bg-white\/80,
+html.dark .bg-white\/75,
+html.dark .bg-white\/70,
+html.dark .bg-white\/60 {
+  background-color: #11141B !important;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* Evitar que inputs con focus:bg-white se vuelvan blancos al hacer clic en modo oscuro */
+html.dark .focus\:bg-white:focus {
+  background-color: #1E2230 !important;
+}
+
+/* Fondos secundarios slate-50 / slate-100 / slate-200 en modo oscuro */
+html.dark .bg-slate-50,
+html.dark .bg-slate-50\/90,
+html.dark .bg-slate-50\/80,
+html.dark .bg-slate-50\/70,
+html.dark .bg-slate-50\/50,
+html.dark .bg-stone-50 {
+  background-color: #11141B;
+}
+
+html.dark main.flex-1 {
+  background-color: transparent;
+}
+
+html.dark .bg-slate-100,
+html.dark .bg-slate-100\/90,
+html.dark .bg-slate-100\/80,
+html.dark .bg-stone-100,
+html.dark .bg-slate-200,
+html.dark .bg-slate-200\/70,
+html.dark .bg-slate-200\/80,
+html.dark .bg-stone-200,
+html.dark .bg-stone-200\/70,
+html.dark .bg-stone-200\/80 {
+  background-color: #1A1E29;
+  color: #e2e8f0;
+}
+
+html.dark .hover\:bg-slate-50:hover,
+html.dark .hover\:bg-slate-100:hover,
+html.dark .hover\:bg-slate-200:hover,
+html.dark .hover\:bg-slate-200\/70:hover,
+html.dark .hover\:bg-stone-100:hover,
+html.dark .hover\:bg-stone-200:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Bordes sutiles estilo Linear en modo oscuro */
+html.dark .border-slate-200,
+html.dark .border-slate-200\/80,
+html.dark .border-slate-200\/90,
+html.dark .border-slate-200\/70,
+html.dark .border-slate-200\/60,
+html.dark .border-slate-300,
+html.dark .border-slate-100,
+html.dark .border-stone-200,
+html.dark .border-stone-200\/80,
+html.dark .border-stone-200\/70,
+html.dark .border-stone-200\/60,
+html.dark .border-stone-300 {
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+html.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-stone-200\/80 > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-stone-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Tipografía en modo oscuro (respetando cualquier clase explícita dark:text-*) */
+html.dark .text-slate-900:not([class*="dark:text-"]),
+html.dark .text-slate-950:not([class*="dark:text-"]),
+html.dark .text-stone-900:not([class*="dark:text-"]),
+html.dark .text-stone-950:not([class*="dark:text-"]) {
+  color: #f8fafc;
+}
+
+/* Excepción: cuando el fondo es ámbar brillante, mantener texto oscuro */
+html.dark .bg-amber-500.text-slate-950,
+html.dark .bg-amber-400.text-slate-950,
+html.dark .dark\:bg-amber-500.dark\:text-slate-950 {
+  color: #090d16 !important;
+}
+
+html.dark .text-slate-800:not([class*="dark:text-"]),
+html.dark .text-stone-800:not([class*="dark:text-"]),
+html.dark .text-slate-700:not([class*="dark:text-"]),
+html.dark .text-stone-700:not([class*="dark:text-"]) {
+  color: #e2e8f0;
+}
+
+html.dark .text-slate-600:not([class*="dark:text-"]),
+html.dark .text-stone-600:not([class*="dark:text-"]),
+html.dark .text-slate-500:not([class*="dark:text-"]),
+html.dark .text-stone-500:not([class*="dark:text-"]),
+html.dark .text-slate-400:not([class*="dark:text-"]),
+html.dark .text-stone-400:not([class*="dark:text-"]) {
+  color: #94a3b8;
+}
+
+html.dark .text-amber-700,
+html.dark .text-amber-800,
+html.dark .text-amber-900,
+html.dark .text-amber-950 {
+  color: #fbbf24;
+}
+
+html.dark .text-emerald-700,
+html.dark .text-emerald-800,
+html.dark .text-emerald-900,
+html.dark .text-emerald-950 {
+  color: #34d399;
+}
+
+html.dark .text-red-700,
+html.dark .text-red-800,
+html.dark .text-red-900,
+html.dark .text-red-950 {
+  color: #f87171;
+}
+
+html.dark .text-blue-700,
+html.dark .text-blue-800,
+html.dark .text-blue-900 {
+  color: #60a5fa;
+}
+
+html.dark .text-purple-700,
+html.dark .text-purple-800,
+html.dark .text-indigo-700,
+html.dark .text-indigo-800 {
+  color: #c084fc;
+}
+
+/* Inputs, selects y textareas en modo oscuro (respetando inputs transparentes en steppers) */
+html.dark input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent),
+html.dark select,
+html.dark textarea {
+  background-color: #1A1E29;
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #f1f5f9;
+}
+
+html.dark input.bg-transparent {
+  background-color: transparent !important;
+  color: #f8fafc !important;
+}
+
+html.dark input::placeholder,
+html.dark textarea::placeholder {
+  color: #64748b;
+}
+
+html.dark select option {
+  background-color: #161922;
+  color: #f1f5f9;
+}
+
+/* Fondos suaves de alerta e insignias en modo oscuro */
+html.dark .bg-red-50,
+html.dark .bg-red-50\/80,
+html.dark .bg-red-100 {
+  background-color: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.28);
+}
+
+html.dark .bg-emerald-50,
+html.dark .bg-emerald-50\/70,
+html.dark .bg-emerald-50\/80,
+html.dark .bg-emerald-100 {
+  background-color: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.28);
+}
+
+html.dark .bg-amber-50,
+html.dark .bg-amber-50\/40,
+html.dark .bg-amber-50\/50,
+html.dark .bg-amber-50\/60,
+html.dark .bg-amber-50\/70,
+html.dark .bg-amber-100 {
+  background-color: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+html.dark .bg-blue-50,
+html.dark .bg-blue-100 {
+  background-color: rgba(59, 130, 246, 0.14);
+  border-color: rgba(59, 130, 246, 0.28);
+}
+
+html.dark .bg-purple-50,
+html.dark .bg-purple-100,
+html.dark .bg-indigo-50,
+html.dark .bg-indigo-100 {
+  background-color: rgba(168, 85, 247, 0.14);
+  border-color: rgba(168, 85, 247, 0.28);
+}
+
+/* Botones oscuros dentro de tarjetas oscuras para que destaquen con borde sutil (solo si no tienen dark:bg-* propio) */
+html.dark button.bg-slate-900:not([class*="dark:bg-"]),
+html.dark button.bg-stone-900:not([class*="dark:bg-"]) {
+  background-color: #222736;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+html.dark button.bg-slate-900:not([class*="dark:bg-"]):hover,
+html.dark button.bg-stone-900:not([class*="dark:bg-"]):hover {
+  background-color: #2B3144;
+}
+
+/* Popups de Leaflet en Modo Oscuro */
+html.dark .leaflet-popup-content-wrapper,
+html.dark .leaflet-popup-tip {
+  background-color: #1A1E29;
+  color: #f1f5f9;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Scrollbar sutil estilo Linear / Fintech */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background: #334155;
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* Ocultar scrollbar en contenedores horizontales de píldoras */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

@@ -1,0 +1,191 @@
+import {
+  LayoutDashboard,
+  Package,
+  Warehouse,
+  ShoppingBag,
+  ClipboardList,
+  Truck,
+  Store,
+  MapPin,
+  CreditCard,
+} from 'lucide-react'
+
+export const ROLES_INFO = {
+  admin: {
+    id: 'admin',
+    label: 'Dueño / Admin',
+    shortLabel: 'Admin',
+    defaultName: 'Carlos Mendoza (Dueño)',
+    badgeColor: 'bg-slate-900 text-amber-400 border-slate-800',
+    description: 'Acceso total al sistema, métricas, precios, almacén y finanzas.',
+    defaultRoute: '/dashboard',
+  },
+  central: {
+    id: 'central',
+    label: 'Cajero Tienda Central',
+    shortLabel: 'Tienda Central',
+    defaultName: 'Lucía Vargas (Caja Central)',
+    badgeColor: 'bg-amber-500/15 text-amber-800 border-amber-300/80',
+    description: 'Venta directa mayorista/minorista en tienda, despacho Día 2 y créditos.',
+    defaultRoute: '/caja-central',
+  },
+  preventista: {
+    id: 'preventista',
+    label: 'Vendedor en Calle (Preventista)',
+    shortLabel: 'Preventista',
+    defaultName: 'Marco Rojas (Ruta Norte)',
+    badgeColor: 'bg-emerald-500/15 text-emerald-800 border-emerald-300/80',
+    description: 'Toma de pedidos en ruta (offline/online), mapa de clientes y cobranzas.',
+    defaultRoute: '/preventa',
+  },
+  almacen: {
+    id: 'almacen',
+    label: 'Encargado de Depósito',
+    shortLabel: 'Almacén',
+    defaultName: 'Jorge Quispe (Depósito)',
+    badgeColor: 'bg-blue-500/15 text-blue-800 border-blue-300/80',
+    description: 'Control de inventario físico, traspasos entre almacenes y consulta de stock.',
+    defaultRoute: '/almacen',
+  },
+}
+
+/**
+ * Definición de menús exactos según cada uno de los 4 roles solicitados
+ */
+export const MENU_BY_ROLE = {
+  admin: [
+    {
+      path: '/dashboard',
+      label: 'Dashboard',
+      shortLabel: 'Dashboard',
+      icon: LayoutDashboard,
+      subtitle: 'Resumen financiero, ventas del día, KPIs de ruta y alertas de stock',
+    },
+    {
+      path: '/productos',
+      label: 'Productos y Precios',
+      shortLabel: 'Productos',
+      icon: Package,
+      subtitle: 'Catálogo de bebidas, paquetes vs botellas y listas de precios',
+    },
+    {
+      path: '/almacen',
+      label: 'Almacén y Traspasos',
+      shortLabel: 'Almacén',
+      icon: Warehouse,
+      subtitle: 'Inventario en Depósito Central y Tienda, ingresos y traspasos',
+    },
+    {
+      path: '/preventa',
+      label: 'Preventa (Ruta)',
+      shortLabel: 'Preventa',
+      icon: ShoppingBag,
+      subtitle: 'Toma de pedidos en calle, cotizaciones y preventa móvil',
+    },
+    {
+      path: '/despacho',
+      label: 'Despacho y Rendición',
+      shortLabel: 'Despacho',
+      icon: Truck,
+      subtitle: 'Entrega a preventistas, seguimiento en ruta y recepción de dinero por el Dueño',
+    },
+    {
+      path: '/caja-central',
+      label: 'Caja Tienda Central',
+      shortLabel: 'Caja',
+      icon: Store,
+      subtitle: 'Punto de Venta (POS) rápido para atención en Tienda Central',
+    },
+    {
+      path: '/clientes',
+      label: 'Clientes y Mapa',
+      shortLabel: 'Clientes',
+      icon: MapPin,
+      subtitle: 'Padrón de clientes, geolocalización GPS y rutas de visita',
+    },
+    {
+      path: '/creditos',
+      label: 'Créditos',
+      shortLabel: 'Créditos',
+      icon: CreditCard,
+      subtitle: 'Cuentas por cobrar, saldos pendientes y registro de abonos',
+    },
+  ],
+  central: [
+    {
+      path: '/caja-central',
+      label: 'Caja Tienda Central',
+      shortLabel: 'Caja Central',
+      icon: Store,
+      subtitle: 'Punto de Venta (POS) mayorista y minorista en Tienda Central',
+    },
+    {
+      path: '/despacho',
+      label: 'Despacho a Preventistas',
+      shortLabel: 'Despacho',
+      icon: Truck,
+      subtitle: 'Alistamiento de carga y entrega de pedidos a los preventistas',
+    },
+    {
+      path: '/clientes',
+      label: 'Clientes y Mapa',
+      shortLabel: 'Clientes',
+      icon: MapPin,
+      subtitle: 'Directorio de clientes y ubicación en mapa interactivo',
+    },
+    {
+      path: '/creditos',
+      label: 'Créditos',
+      shortLabel: 'Créditos',
+      icon: CreditCard,
+      subtitle: 'Gestión de cuentas por cobrar y pagos en caja central',
+    },
+  ],
+  preventista: [
+    {
+      path: '/preventa',
+      label: 'Nueva Preventa/Cotización',
+      shortLabel: 'Nueva Preventa',
+      icon: ShoppingBag,
+      subtitle: 'Toma rápida de pedidos en ruta con soporte Offline (Dexie)',
+    },
+    {
+      path: '/mis-pedidos',
+      label: 'Mis Pedidos y Cobros',
+      shortLabel: 'Pedidos y Cobros',
+      icon: ClipboardList,
+      subtitle: 'Pedidos pendientes, entrega/cobro al cliente y arqueo de dinero para el Dueño',
+    },
+    {
+      path: '/clientes',
+      label: 'Clientes y Mapa',
+      shortLabel: 'Clientes',
+      icon: MapPin,
+      subtitle: 'Lista de clientes y mapa con ubicación GPS de sus tiendas',
+    },
+    {
+      path: '/creditos',
+      label: 'Cobro de Créditos',
+      shortLabel: 'Cobranzas',
+      icon: CreditCard,
+      subtitle: 'Cobro de saldos pendientes a clientes durante la visita en ruta',
+    },
+  ],
+  almacen: [
+    {
+      path: '/almacen',
+      label: 'Almacén y Traspasos',
+      shortLabel: 'Almacén',
+      icon: Warehouse,
+      subtitle: 'Recepción de mercadería, control de cajas/sueltas y traspasos a Tienda',
+    },
+    {
+      path: '/productos',
+      label: 'Productos y Precios',
+      shortLabel: 'Stock (Lectura)',
+      icon: Package,
+      readOnlyStock: true,
+      subtitle: 'Consulta de catálogo y stock disponible en Paquetes y Botellas (Solo lectura)',
+    },
+  ],
+}
