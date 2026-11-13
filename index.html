@@ -1,15 +1,22 @@
 <!doctype html>
-<html lang="es">
+<html lang="es" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <meta name="theme-color" content="#0f172a" />
+    <meta name="theme-color" content="#0B0D11" />
     <title>BevFlow — Sistema de Distribución de Bebidas</title>
+    <script>
+      try {
+        var t = localStorage.getItem('bebidas_theme_v2');
+        if (t === 'light') document.documentElement.classList.remove('dark');
+        else document.documentElement.classList.add('dark');
+      } catch (e) {}
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   </head>
-  <body class="bg-slate-50 text-slate-900 antialiased selection:bg-amber-500/20 selection:text-amber-900">
+  <body class="bg-slate-50 dark:bg-[#0B0D11] text-slate-900 dark:text-slate-100 antialiased selection:bg-amber-500/20 selection:text-amber-900 dark:selection:text-amber-300">
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

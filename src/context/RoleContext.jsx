@@ -20,7 +20,7 @@ const RoleContext = createContext(null)
 const STORAGE_AUTH_ACCOUNT_KEY = 'bebidas_sesion_usuario_v1'
 const STORAGE_ROLE_KEY = 'bebidas_rol_activo'
 const STORAGE_PROFILE_KEY = 'bebidas_perfil_activo'
-const STORAGE_THEME_KEY = 'theme'
+const STORAGE_THEME_KEY = 'bebidas_theme_v2'
 
 export function RoleProvider({ children }) {
   const [theme, setTheme] = useState(() => {
@@ -30,7 +30,7 @@ export function RoleProvider({ children }) {
     } catch {
       // ignore
     }
-    return 'light'
+    return 'dark'
   })
 
   useEffect(() => {
