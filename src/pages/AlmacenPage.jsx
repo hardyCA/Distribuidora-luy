@@ -15,6 +15,7 @@ import {
   Plus,
   Minus,
   ChevronDown,
+  ArrowLeft,
 } from 'lucide-react'
 import {
   supabase,
@@ -22,10 +23,14 @@ import {
   enriquecerProductosConCosto,
   enriquecerMovimientosConCosto,
   registrarCostoCompraAlmacen,
+  obtenerMapaLogosMarcas,
+  obtenerLogoDeMarca,
+  enriquecerMarcasConLogo,
 } from '../lib/supabase'
 import { useRole } from '../context/RoleContext'
 import BottleVisual from '../components/BottleVisual'
 import PaginationBar from '../components/PaginationBar'
+import { BrandBoxesGrid, BrandActiveBar } from '../components/BrandBoxesGrid'
 
 const TAMANO_STOCK_TARJETAS = 18
 const TAMANO_STOCK_LISTA = 25
@@ -73,6 +78,7 @@ export default function AlmacenPage() {
 
   const [productos, setProductos] = useState([])
   const [marcasTabla, setMarcasTabla] = useState([])
+  const [mapaLogosMarcas, setMapaLogosMarcas] = useState({})
   const [ubicaciones, setUbicaciones] = useState([])
   const [inventario, setInventario] = useState([])
   const [movimientos, setMovimientos] = useState([])
@@ -85,9 +91,9 @@ export default function AlmacenPage() {
   // Modo visual en Stock: 'tarjetas' (con protagonismo de imagen) | 'lista' (tabla limpia con miniatura)
   const [vistaStock, setVistaStock] = useState('tarjetas')
 
-  // Buscador y filtro rápido por Marca (compartido entre Stock e Historial)
+  // Buscador y navegación por Cajas de Marca (`null` = vista de cajas de marcas; `'TODAS'` = ver todo junto)
   const [busqueda, setBusqueda] = useState('')
-  const [marcaSeleccionada, setMarcaSeleccionada] = useState('TODAS')
+  const [marcaSeleccionada, setMarcaSeleccionada] = useState(null)
 
   // Filtro de historial ('TODOS' | 'compra_almacen' | 'traspaso_a_central') + Paginación en servidor
   const [filtroTipoMov, setFiltroTipoMov] = useState('TODOS')
@@ -100,7 +106,7 @@ export default function AlmacenPage() {
   const [modalTipo, setModalTipo] = useState(null)
   const [mostrarSelectorModal, setMostrarSelectorModal] = useState(false)
   const [busquedaModal, setBusquedaModal] = useState('')
-  const [marcaModalFiltro, setMarcaModalFiltro] = useState('TODAS')
+  const [marcaModalFiltro, setMarcaModalFiltro] = useState(null)
   const [productoIdSel, setProductoIdSel] = useState('')
   const [paquetesInput, setPaquetesInput] = useState('')
   const [sueltasInput, setSueltasInput] = useState('')
@@ -116,7 +122,9 @@ export default function AlmacenPage() {
       try {
         const desde = (pagina - 1) * TAMANO_MOVIMIENTOS
         const hasta = desde + TAMANO_MOVIMIENTOS - 1
-        const hayFiltroLocal = Boolean(textoQ.trim()) || marcaFiltro !== 'TODAS'
+        const hayFiltroLocal =
+          Boolean(textoQ.trim()) ||
+          Boolean(marcaFiltro && marcaFiltro !== 'TODAS')
 
         let queryMov = supabase
           .from('movimientos_stock')
@@ -156,7 +164,7 @@ export default function AlmacenPage() {
     setCargando(true)
     setErrorGeneral('')
     try {
-      const [resProd, resMarcas, resUbic, resInv] = await Promise.all([
+      const [resProd, resMarcas, resUbic, resInv, mapaLogos] = await Promise.all([
         supabase
           .from('productos')
           .select('*')
@@ -169,6 +177,7 @@ export default function AlmacenPage() {
           .order('nombre', { ascending: true }),
         supabase.from('ubicaciones').select('*'),
         supabase.from('inventario').select('*'),
+        obtenerMapaLogosMarcas(false),
       ])
 
       if (resProd.error) throw resProd.error
@@ -177,8 +186,10 @@ export default function AlmacenPage() {
 
       const listaProds = await enriquecerProductosConCosto(resProd.data || [])
       setProductos(listaProds)
+      setMapaLogosMarcas(mapaLogos || {})
       if (!resMarcas.error && resMarcas.data) {
-        setMarcasTabla(resMarcas.data)
+        const marcasConLogo = await enriquecerMarcasConLogo(resMarcas.data)
+        setMarcasTabla(marcasConLogo)
       }
       setUbicaciones(resUbic.data || [])
       setInventario(resInv.data || [])
@@ -254,11 +265,61 @@ export default function AlmacenPage() {
     return Array.from(setMarcas).sort((a, b) => a.localeCompare(b, 'es'))
   }, [marcasTabla, productos])
 
+  // Cajas de Marcas con resumen real de stock y Logo oficial o Nombre Grande (Nivel 1 en Almacén)
+  const tarjetasMarcasStock = useMemo(() => {
+    return marcasDisponibles.map((nombreMarca) => {
+      const prodsMarca = productos.filter(
+        (p) => (p.marca || '').trim() === nombreMarca
+      )
+      const filaMarca = marcasTabla.find(
+        (m) => (m.nombre || '').trim().toLowerCase() === nombreMarca.toLowerCase()
+      )
+      const logoUrl =
+        filaMarca?.logo_url || obtenerLogoDeMarca(nombreMarca, mapaLogosMarcas)
+
+      let totalPaquetesMarca = 0
+      let totalBotellasSueltasMarca = 0
+      let sinCentralCount = 0
+
+      prodsMarca.forEach((p) => {
+        const unidPaq = Math.max(1, Number(p.unidades_por_paquete) || 6)
+        const st = stockPorProducto[p.id] || { almacen: 0, central: 0 }
+        const totUnid = st.almacen + st.central
+        totalPaquetesMarca += Math.floor(totUnid / unidPaq)
+        totalBotellasSueltasMarca += totUnid % unidPaq
+        if (st.central <= 0) sinCentralCount += 1
+      })
+
+      let resumenStockMarca = 'Sin stock'
+      if (totalPaquetesMarca > 0) {
+        resumenStockMarca = `${totalPaquetesMarca} paq total`
+      } else if (totalBotellasSueltasMarca > 0) {
+        resumenStockMarca = `${totalBotellasSueltasMarca} bot total`
+      }
+
+      return {
+        nombre: nombreMarca,
+        logoUrl,
+        cantidadProductos: prodsMarca.length,
+        subtituloExtra: prodsMarca.length > 0 ? resumenStockMarca : '',
+        alertaTexto:
+          prodsMarca.length > 0 && sinCentralCount > 0
+            ? `${sinCentralCount} sin Central`
+            : '',
+        alertaTipo: 'warning',
+      }
+    })
+  }, [marcasDisponibles, marcasTabla, mapaLogosMarcas, productos, stockPorProducto])
+
+  const mostrarCajasMarcasStock =
+    pestanaActiva === 'stock' && marcaSeleccionada === null && !busqueda.trim()
+
   // Productos filtrados en tiempo real
   const productosFiltrados = useMemo(() => {
     const q = busqueda.trim().toLowerCase()
     return productos.filter((p) => {
       if (
+        marcaSeleccionada &&
         marcaSeleccionada !== 'TODAS' &&
         (p.marca || '').trim() !== marcaSeleccionada
       ) {
@@ -277,6 +338,8 @@ export default function AlmacenPage() {
     const q = busquedaModal.trim().toLowerCase()
     return productos.filter((p) => {
       if (
+        !q &&
+        marcaModalFiltro &&
         marcaModalFiltro !== 'TODAS' &&
         (p.marca || '').trim() !== marcaModalFiltro
       ) {
@@ -381,28 +444,26 @@ export default function AlmacenPage() {
       setMarcaModalFiltro(prodObj?.marca?.trim() || 'TODAS')
       seleccionarProductoEnModal(prodObj, 0)
       setMostrarSelectorModal(false)
-    } else {
-      const marcaInicial =
-        marcaSeleccionada !== 'TODAS' ? marcaSeleccionada : 'TODAS'
-      setMarcaModalFiltro(marcaInicial)
+    } else if (marcaSeleccionada && marcaSeleccionada !== 'TODAS') {
+      // Si el usuario ya entró a una marca en pantalla, abrimos directo las bebidas de esa marca
+      setMarcaModalFiltro(marcaSeleccionada)
       setMostrarSelectorModal(true)
-
-      const candidatos =
-        marcaInicial === 'TODAS'
-          ? productos
-          : productos.filter((p) => (p.marca || '').trim() === marcaInicial)
-
+      const candidatos = productos.filter(
+        (p) => (p.marca || '').trim() === marcaSeleccionada
+      )
       if (candidatos.length > 0) {
         const primeroConStock =
           tipo === 'traspaso_a_central'
             ? candidatos.find((p) => (stockPorProducto[p.id]?.almacen || 0) > 0)
             : null
-        const elegido = primeroConStock || candidatos[0]
-        seleccionarProductoEnModal(elegido, 0)
-      } else if (productos.length > 0) {
-        setMarcaModalFiltro('TODAS')
-        seleccionarProductoEnModal(productos[0], 0)
+        seleccionarProductoEnModal(primeroConStock || candidatos[0], 0)
       }
+    } else {
+      // Si está en Cajas de Marcas, primero elige la Marca en cajas dentro del modal
+      setMarcaModalFiltro(null)
+      setProductoIdSel('')
+      setCostoPaqueteInput('')
+      setMostrarSelectorModal(true)
     }
   }
 
@@ -580,6 +641,7 @@ export default function AlmacenPage() {
       }
       const prodRef = m.productos || mapaProductosPorId[m.producto_id]
       if (
+        marcaSeleccionada &&
         marcaSeleccionada !== 'TODAS' &&
         (prodRef?.marca || '').trim() !== marcaSeleccionada
       ) {
@@ -661,7 +723,7 @@ export default function AlmacenPage() {
 
           {/* Derecha: Acciones principales claras y con alto contraste en Dark/Light */}
           <div className="flex flex-wrap items-center gap-2">
-            {pestanaActiva === 'stock' && (
+            {pestanaActiva === 'stock' && !mostrarCajasMarcasStock && (
               <div
                 className="inline-flex items-center p-0.5 rounded-xl bg-white dark:bg-[#161922] border border-slate-200/80 dark:border-white/[0.08]"
                 title="Cambiar vista"
@@ -726,10 +788,10 @@ export default function AlmacenPage() {
           </div>
         </div>
 
-        {/* Fila de Buscador + Píldoras de Marcas (Cero ruido visual) */}
+        {/* Fila de Buscador + Controles contextuales */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-0.5">
           <div className="flex items-center gap-2 w-full sm:w-auto">
-            <div className="relative flex-1 sm:w-64">
+            <div className="relative flex-1 sm:w-72">
               <Search
                 size={15}
                 className="text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
@@ -742,7 +804,11 @@ export default function AlmacenPage() {
                   setPaginaStock(1)
                   setPaginaMov(1)
                 }}
-                placeholder="Buscar bebida o sabor..."
+                placeholder={
+                  marcaSeleccionada && marcaSeleccionada !== 'TODAS'
+                    ? `Buscar en ${marcaSeleccionada}...`
+                    : 'Buscar bebida o sabor directo...'
+                }
                 className="w-full h-9 pl-9 pr-8 rounded-xl bg-white dark:bg-[#161922] border border-slate-200/80 dark:border-white/[0.08] text-xs sm:text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-amber-500/60 transition"
               />
               {busqueda && (
@@ -787,43 +853,63 @@ export default function AlmacenPage() {
             )}
           </div>
 
-          {/* Píldoras de Marcas horizontales */}
-          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 min-w-0">
-            <button
-              type="button"
-              onClick={() => {
-                setMarcaSeleccionada('TODAS')
-                setPaginaStock(1)
-                setPaginaMov(1)
-              }}
-              className={`h-8 px-3 rounded-xl text-xs transition shrink-0 cursor-pointer ${
-                marcaSeleccionada === 'TODAS'
-                  ? 'bg-slate-900 text-white dark:bg-white/15 dark:text-white font-semibold'
-                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/5'
-              }`}
-            >
-              Todas
-            </button>
-            {marcasDisponibles.map((marca) => (
+          {/* En Historial mantenemos píldoras de filtro rápido por marca */}
+          {pestanaActiva === 'historial' && (
+            <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 min-w-0">
               <button
-                key={marca}
                 type="button"
                 onClick={() => {
-                  setMarcaSeleccionada(marca)
-                  setPaginaStock(1)
+                  setMarcaSeleccionada(null)
                   setPaginaMov(1)
                 }}
                 className={`h-8 px-3 rounded-xl text-xs transition shrink-0 cursor-pointer ${
-                  marcaSeleccionada === marca
+                  !marcaSeleccionada || marcaSeleccionada === 'TODAS'
                     ? 'bg-slate-900 text-white dark:bg-white/15 dark:text-white font-semibold'
                     : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/5'
                 }`}
               >
-                {marca}
+                Todas
               </button>
-            ))}
-          </div>
+              {marcasDisponibles.map((marca) => (
+                <button
+                  key={marca}
+                  type="button"
+                  onClick={() => {
+                    setMarcaSeleccionada(marca)
+                    setPaginaMov(1)
+                  }}
+                  className={`h-8 px-3 rounded-xl text-xs transition shrink-0 cursor-pointer ${
+                    marcaSeleccionada === marca
+                      ? 'bg-slate-900 text-white dark:bg-white/15 dark:text-white font-semibold'
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/5'
+                  }`}
+                >
+                  {marca}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
+
+        {/* Barra de retorno `← Marcas` cuando estamos dentro de una marca en Stock */}
+        {pestanaActiva === 'stock' && !mostrarCajasMarcasStock && (
+          <BrandActiveBar
+            marcaActiva={
+              marcaSeleccionada || `Resultados para "${busqueda.trim()}"`
+            }
+            logoUrl={
+              marcaSeleccionada && marcaSeleccionada !== 'TODAS'
+                ? obtenerLogoDeMarca(marcaSeleccionada, mapaLogosMarcas)
+                : ''
+            }
+            cantidadItems={productosFiltrados.length}
+            onVolverMarcas={() => {
+              setMarcaSeleccionada(null)
+              setBusqueda('')
+              setPaginaStock(1)
+            }}
+          />
+        )}
       </div>
 
       {/* Notificación limpia de éxito / error */}
@@ -850,9 +936,32 @@ export default function AlmacenPage() {
         </div>
       )}
 
-      {/* ================= PESTAÑA 1: STOCK POR UBICACIÓN (CON IMAGEN Y CERO RUIDO VISUAL) ================= */}
+      {/* ================= PESTAÑA 1: STOCK POR MARCAS (CAJAS DE MARCAS -> BEBIDAS) ================= */}
       {pestanaActiva === 'stock' ? (
-        productosFiltrados.length === 0 ? (
+        cargando ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3.5">
+            {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+              <div
+                key={n}
+                className="bg-white dark:bg-[#161922] border border-slate-200/70 dark:border-white/[0.06] rounded-2xl p-4 h-44 animate-pulse"
+              />
+            ))}
+          </div>
+        ) : mostrarCajasMarcasStock ? (
+          <BrandBoxesGrid
+            marcas={tarjetasMarcasStock}
+            onSelectMarca={(nombreMarca) => {
+              setMarcaSeleccionada(nombreMarca)
+              setPaginaStock(1)
+            }}
+            onVerTodas={() => {
+              setMarcaSeleccionada('TODAS')
+              setPaginaStock(1)
+            }}
+            tituloSeccion="Stock agrupado por marca"
+            textoVerTodas="Ver todo el stock"
+          />
+        ) : productosFiltrados.length === 0 ? (
           <div className="bg-white dark:bg-[#161922] rounded-2xl border border-slate-200/80 dark:border-white/[0.06] p-10 text-center text-sm text-slate-400">
             No se encontraron bebidas para el filtro seleccionado.
           </div>
@@ -1303,7 +1412,8 @@ export default function AlmacenPage() {
               <PaginationBar
                 paginaActual={paginaMov}
                 totalRegistros={
-                  busqueda.trim() || marcaSeleccionada !== 'TODAS'
+                  busqueda.trim() ||
+                  (marcaSeleccionada && marcaSeleccionada !== 'TODAS')
                     ? movimientosFiltrados.length
                     : totalMovServidor
                 }
@@ -1430,106 +1540,122 @@ export default function AlmacenPage() {
                   </div>
                 )}
 
-                {/* Selector visual con fotos y filtro por marca */}
-                {mostrarSelectorModal && (
+                {/* Selector en 2 pasos: Cajas de Marcas -> Bebidas de esa Marca */}
+                {(mostrarSelectorModal || !productoSeleccionado) && (
                   <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-[#11141C] p-3 space-y-2.5">
-                    <div className="relative">
-                      <Search
-                        size={14}
-                        className="text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
-                      />
-                      <input
-                        type="text"
-                        value={busquedaModal}
-                        onChange={(e) => setBusquedaModal(e.target.value)}
-                        placeholder="Buscar bebida..."
-                        className="w-full h-8 pl-8 pr-3 rounded-lg bg-slate-50 dark:bg-white/[0.04] border border-slate-200/80 dark:border-white/[0.08] text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-amber-500/60"
-                      />
-                    </div>
-
-                    {marcasDisponibles.length > 0 && (
-                      <div className="flex items-center gap-1 overflow-x-auto no-scrollbar pb-0.5">
+                    <div className="flex items-center gap-2">
+                      {marcaModalFiltro && !busquedaModal.trim() && (
                         <button
                           type="button"
-                          onClick={() => setMarcaModalFiltro('TODAS')}
-                          className={`h-6.5 px-2.5 rounded-lg text-[11px] transition shrink-0 cursor-pointer ${
-                            marcaModalFiltro === 'TODAS'
-                              ? 'bg-slate-900 text-white dark:bg-white/15 font-semibold'
-                              : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5'
-                          }`}
+                          onClick={() => setMarcaModalFiltro(null)}
+                          className="h-8 px-2.5 rounded-lg bg-slate-100 dark:bg-white/[0.08] text-slate-800 dark:text-white text-xs font-bold inline-flex items-center gap-1 shrink-0 cursor-pointer"
                         >
-                          Todas
+                          <ArrowLeft size={13} className="text-amber-500" />
+                          <span>Marcas</span>
                         </button>
-                        {marcasDisponibles.map((m) => (
+                      )}
+
+                      <div className="relative flex-1">
+                        <Search
+                          size={14}
+                          className="text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                        />
+                        <input
+                          type="text"
+                          value={busquedaModal}
+                          onChange={(e) => setBusquedaModal(e.target.value)}
+                          placeholder={
+                            marcaModalFiltro && marcaModalFiltro !== 'TODAS'
+                              ? `Buscar en ${marcaModalFiltro}...`
+                              : 'Buscar bebida directo...'
+                          }
+                          className="w-full h-8 pl-8 pr-3 rounded-lg bg-slate-50 dark:bg-white/[0.04] border border-slate-200/80 dark:border-white/[0.08] text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-amber-500/60"
+                        />
+                      </div>
+                    </div>
+
+                    {marcaModalFiltro === null && !busquedaModal.trim() ? (
+                      <div className="max-h-56 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-2 pr-0.5">
+                        {tarjetasMarcasStock.map((mItem) => (
                           <button
-                            key={m}
+                            key={mItem.nombre}
                             type="button"
-                            onClick={() => setMarcaModalFiltro(m)}
-                            className={`h-6.5 px-2.5 rounded-lg text-[11px] transition shrink-0 cursor-pointer ${
-                              marcaModalFiltro === m
-                                ? 'bg-slate-900 text-white dark:bg-white/15 font-semibold'
-                                : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5'
-                            }`}
+                            onClick={() => setMarcaModalFiltro(mItem.nombre)}
+                            className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.04] hover:bg-amber-500/10 border border-slate-200/80 dark:border-white/[0.08] hover:border-amber-500/50 text-center flex flex-col items-center justify-center gap-1 min-h-[76px] transition cursor-pointer"
                           >
-                            {m}
+                            {mItem.logoUrl ? (
+                              <img
+                                src={mItem.logoUrl}
+                                alt={mItem.nombre}
+                                className="max-h-8 max-w-[78%] object-contain"
+                              />
+                            ) : (
+                              <div className="text-xs sm:text-sm font-black text-slate-900 dark:text-white line-clamp-1">
+                                {mItem.nombre}
+                              </div>
+                            )}
+                            <div className="text-[10px] text-slate-400 tabular-nums">
+                              {mItem.logoUrl ? `${mItem.nombre} · ` : ''}
+                              {mItem.cantidadProductos} beb.
+                            </div>
                           </button>
                         ))}
                       </div>
+                    ) : (
+                      <div className="max-h-48 overflow-y-auto space-y-1 pr-0.5">
+                        {productosModalFiltrados.map((p) => {
+                          const stDep = stockPorProducto[p.id]?.almacen || 0
+                          const uPaq = Math.max(
+                            1,
+                            Number(p.unidades_por_paquete) || 6
+                          )
+                          const activo = p.id === productoIdSel
+
+                          return (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onClick={() => {
+                                seleccionarProductoEnModal(
+                                  p,
+                                  totalBotellasOperacion
+                                )
+                                setMostrarSelectorModal(false)
+                                setErrorModal('')
+                              }}
+                              className={`w-full p-2 rounded-xl flex items-center justify-between gap-2.5 text-left transition cursor-pointer ${
+                                activo
+                                  ? 'bg-amber-500/12 border border-amber-500/35'
+                                  : 'hover:bg-slate-50 dark:hover:bg-white/[0.04] border border-transparent'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div className="w-8 h-9 rounded-lg bg-[#F6F5F2] dark:bg-white/[0.05] shrink-0 overflow-hidden flex items-center justify-center">
+                                  <BottleVisual
+                                    imagenUrl={p.imagen_url}
+                                    nombre={p.nombre}
+                                    alturaClass="h-7"
+                                  />
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                                    {p.nombre}
+                                    {p.sabor ? ` · ${p.sabor}` : ''}
+                                  </div>
+                                  <div className="text-[11px] text-slate-400">
+                                    {p.marca} · Pack x{uPaq}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-300 shrink-0 tabular-nums">
+                                {formatearCantidadesLimpio(stDep, uPaq)}
+                              </span>
+                            </button>
+                          )
+                        })}
+                      </div>
                     )}
-
-                    <div className="max-h-48 overflow-y-auto space-y-1 pr-0.5">
-                      {productosModalFiltrados.map((p) => {
-                        const stDep = stockPorProducto[p.id]?.almacen || 0
-                        const uPaq = Math.max(
-                          1,
-                          Number(p.unidades_por_paquete) || 6
-                        )
-                        const activo = p.id === productoIdSel
-
-                        return (
-                          <button
-                            key={p.id}
-                            type="button"
-                            onClick={() => {
-                              seleccionarProductoEnModal(
-                                p,
-                                totalBotellasOperacion
-                              )
-                              setMostrarSelectorModal(false)
-                              setErrorModal('')
-                            }}
-                            className={`w-full p-2 rounded-xl flex items-center justify-between gap-2.5 text-left transition cursor-pointer ${
-                              activo
-                                ? 'bg-amber-500/12 border border-amber-500/35'
-                                : 'hover:bg-slate-50 dark:hover:bg-white/[0.04] border border-transparent'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="w-8 h-9 rounded-lg bg-[#F6F5F2] dark:bg-white/[0.05] shrink-0 overflow-hidden flex items-center justify-center">
-                                <BottleVisual
-                                  imagenUrl={p.imagen_url}
-                                  nombre={p.nombre}
-                                  alturaClass="h-7"
-                                />
-                              </div>
-                              <div className="min-w-0">
-                                <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                                  {p.nombre}
-                                  {p.sabor ? ` · ${p.sabor}` : ''}
-                                </div>
-                                <div className="text-[11px] text-slate-400">
-                                  {p.marca} · Pack x{uPaq}
-                                </div>
-                              </div>
-                            </div>
-
-                            <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-300 shrink-0 tabular-nums">
-                              {formatearCantidadesLimpio(stDep, uPaq)}
-                            </span>
-                          </button>
-                        )
-                      })}
-                    </div>
                   </div>
                 )}
               </div>

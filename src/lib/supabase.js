@@ -933,6 +933,216 @@ export async function subirImagenProductoSupabase(
 }
 
 /**
+ * ============================================================================
+ * LOGOS OFICIALES DE MARCAS (STORAGE + CACHÉ LOCAL OFFLINE)
+ * ============================================================================
+ * Permite asociar el logo oficial a cada marca en Supabase Storage (`productos/marcas/...`
+ * + mapa ligero `productos/config/logos_marcas.json`) sin requerir migración SQL manual
+ * y con `.list()` previo para cero errores `400 Bad Request`.
+ */
+const LOGOS_MARCAS_STORAGE_PATH = 'config/logos_marcas.json'
+const LOGOS_MARCAS_LOCAL_KEY = 'distribuidora_logos_marcas_v1'
+
+let _cacheLogosMemoria = null
+let _cacheLogosTimestamp = 0
+let _promesaLogosEnCurso = null
+const CACHE_LOGOS_TTL_MS = 5 * 60 * 1000
+
+function normalizarClaveMarcaLogo(nombre = '') {
+  return String(nombre || '').trim().toLowerCase()
+}
+
+function leerLogosLocal() {
+  try {
+    const raw = localStorage.getItem(LOGOS_MARCAS_LOCAL_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+
+function escribirLogosLocal(mapa) {
+  try {
+    localStorage.setItem(LOGOS_MARCAS_LOCAL_KEY, JSON.stringify(mapa || {}))
+  } catch {
+    // ignore
+  }
+}
+
+export async function obtenerMapaLogosMarcas(forzarRecarga = false) {
+  const ahora = Date.now()
+  if (
+    !forzarRecarga &&
+    _cacheLogosMemoria &&
+    ahora - _cacheLogosTimestamp < CACHE_LOGOS_TTL_MS
+  ) {
+    return _cacheLogosMemoria
+  }
+
+  if (!forzarRecarga && _promesaLogosEnCurso) {
+    return _promesaLogosEnCurso
+  }
+
+  _promesaLogosEnCurso = (async () => {
+    const local = leerLogosLocal()
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      _cacheLogosMemoria = local
+      _cacheLogosTimestamp = Date.now()
+      return local
+    }
+
+    try {
+      const { data: listaArchivos, error: errList } = await supabaseAdmin.storage
+        .from('productos')
+        .list('config', { limit: 10, search: 'logos_marcas.json' })
+
+      const existeArchivo =
+        !errList &&
+        Array.isArray(listaArchivos) &&
+        listaArchivos.some((f) => f.name === 'logos_marcas.json')
+
+      if (existeArchivo) {
+        const { data, error } = await supabaseAdmin.storage
+          .from('productos')
+          .download(LOGOS_MARCAS_STORAGE_PATH)
+        if (!error && data) {
+          const text = await data.text()
+          const remoto = JSON.parse(text || '{}')
+          const combinado = { ...local, ...remoto }
+          escribirLogosLocal(combinado)
+          _cacheLogosMemoria = combinado
+          _cacheLogosTimestamp = Date.now()
+          return combinado
+        }
+      }
+    } catch {
+      // Fallback silencioso a caché local
+    }
+
+    _cacheLogosMemoria = local
+    _cacheLogosTimestamp = Date.now()
+    return local
+  })()
+
+  try {
+    return await _promesaLogosEnCurso
+  } finally {
+    _promesaLogosEnCurso = null
+  }
+}
+
+export function obtenerLogoDeMarca(nombreMarca, mapaLogos = null) {
+  const clave = normalizarClaveMarcaLogo(nombreMarca)
+  if (!clave) return ''
+  const fuente = mapaLogos || _cacheLogosMemoria || leerLogosLocal()
+  return fuente?.[clave] || ''
+}
+
+async function persistirMapaLogosEnNube(mapaActualizado) {
+  escribirLogosLocal(mapaActualizado)
+  _cacheLogosMemoria = mapaActualizado
+  _cacheLogosTimestamp = Date.now()
+
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return mapaActualizado
+
+  try {
+    const blob = new Blob([JSON.stringify(mapaActualizado)], {
+      type: 'application/json',
+    })
+    await supabaseAdmin.storage
+      .from('productos')
+      .upload(LOGOS_MARCAS_STORAGE_PATH, blob, {
+        contentType: 'application/json',
+        cacheControl: '0',
+        upsert: true,
+      })
+  } catch {
+    // Queda respaldado localmente si falla la red
+  }
+  return mapaActualizado
+}
+
+export async function subirLogoMarcaSupabase(fileOrBlob, nombreMarca = 'marca') {
+  const archivoOptimizado = await comprimirImagenLigeraWebP(
+    fileOrBlob,
+    480,
+    360,
+    0.86
+  )
+
+  const ext =
+    archivoOptimizado.type === 'image/webp'
+      ? 'webp'
+      : archivoOptimizado.type === 'image/jpeg'
+      ? 'jpg'
+      : 'png'
+
+  const slug = String(nombreMarca || 'marca')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+
+  const filePath = `marcas/${slug || 'marca'}-${Date.now()}.${ext}`
+  const opcionesUpload = {
+    contentType: archivoOptimizado.type || 'image/webp',
+    cacheControl: '31536000',
+    upsert: true,
+  }
+
+  let uploadError = null
+  const { error: anonErr } = await supabase.storage
+    .from('productos')
+    .upload(filePath, archivoOptimizado, opcionesUpload)
+
+  if (anonErr) {
+    const { error: adminErr } = await supabaseAdmin.storage
+      .from('productos')
+      .upload(filePath, archivoOptimizado, opcionesUpload)
+    uploadError = adminErr
+  }
+
+  if (uploadError) throw uploadError
+
+  const { data } = supabase.storage.from('productos').getPublicUrl(filePath)
+  return data.publicUrl
+}
+
+export async function guardarLogoMarcaRespaldo(nombreMarca, logoUrl = '') {
+  const clave = normalizarClaveMarcaLogo(nombreMarca)
+  if (!clave) return {}
+  const actual = await obtenerMapaLogosMarcas(false)
+  const actualizado = { ...actual }
+  if (logoUrl) {
+    actualizado[clave] = logoUrl
+  } else {
+    delete actualizado[clave]
+  }
+  return persistirMapaLogosEnNube(actualizado)
+}
+
+export async function renombrarLogoMarcaRespaldo(viejoNombre, nuevoNombre) {
+  const claveVieja = normalizarClaveMarcaLogo(viejoNombre)
+  const claveNueva = normalizarClaveMarcaLogo(nuevoNombre)
+  if (!claveVieja || !claveNueva || claveVieja === claveNueva) return
+  const actual = await obtenerMapaLogosMarcas(false)
+  if (!actual[claveVieja]) return
+  const actualizado = { ...actual, [claveNueva]: actual[claveVieja] }
+  delete actualizado[claveVieja]
+  await persistirMapaLogosEnNube(actualizado)
+}
+
+export async function enriquecerMarcasConLogo(marcas = [], forzarRecarga = false) {
+  const mapa = await obtenerMapaLogosMarcas(forzarRecarga)
+  return (marcas || []).map((m) => ({
+    ...m,
+    logo_url: m.logo_url || obtenerLogoDeMarca(m.nombre, mapa) || '',
+  }))
+}
+
+/**
  * Consulta ventas entregadas filtrando directamente en PostgreSQL por rango de fechas
  * y paginando en bloques de 500 (`.range()`) para:
  *  1) Ahorrar ~90% de Egress al consultar Día o Mes.
@@ -1105,15 +1315,82 @@ function escribirCustodiaLocal(mapa) {
   }
 }
 
+const ORDEN_ETAPAS_CUSTODIA = {
+  pendiente_alistar: 0,
+  entregado_preventista: 1,
+  cobrado_preventista: 2,
+  rendido_dueno: 3,
+  cancelado: 4,
+}
+
+function obtenerTimestampCustodia(info = {}) {
+  const iso =
+    info.fecha_cancelacion ||
+    info.fecha_rendicion ||
+    info.fecha_cobro ||
+    info.fecha_despacho ||
+    ''
+  const ts = iso ? Date.parse(iso) : 0
+  return Number.isNaN(ts) ? 0 : ts
+}
+
+function combinarMapasCustodia(local = {}, remoto = {}) {
+  const ids = new Set([
+    ...Object.keys(local || {}),
+    ...Object.keys(remoto || {}),
+  ])
+  const resultado = {}
+
+  ids.forEach((id) => {
+    const loc = local?.[id]
+    const rem = remoto?.[id]
+    if (loc && !rem) {
+      resultado[id] = loc
+      return
+    }
+    if (rem && !loc) {
+      resultado[id] = rem
+      return
+    }
+    if (!loc && !rem) return
+
+    const rangoLoc = ORDEN_ETAPAS_CUSTODIA[loc.etapa_ruta] ?? 0
+    const rangoRem = ORDEN_ETAPAS_CUSTODIA[rem.etapa_ruta] ?? 0
+
+    if (rangoLoc > rangoRem) {
+      resultado[id] = { ...rem, ...loc }
+    } else if (rangoRem > rangoLoc) {
+      resultado[id] = { ...loc, ...rem }
+    } else {
+      resultado[id] =
+        obtenerTimestampCustodia(loc) >= obtenerTimestampCustodia(rem)
+          ? { ...rem, ...loc }
+          : { ...loc, ...rem }
+    }
+  })
+
+  return resultado
+}
+
 function podarCustodiaAntigua(mapa = {}) {
-  const hace90DiasMs = Date.now() - 90 * 24 * 60 * 60 * 1000
+  const ahoraMs = Date.now()
+  const hace90DiasMs = ahoraMs - 90 * 24 * 60 * 60 * 1000
+  const hace24HorasMs = ahoraMs - 24 * 60 * 60 * 1000
   const limpio = {}
   Object.entries(mapa || {}).forEach(([ventaId, info]) => {
     if (!info || typeof info !== 'object') return
+    if (info.etapa_ruta === 'cancelado') {
+      const tsCanc = info.fecha_cancelacion
+        ? new Date(info.fecha_cancelacion).getTime()
+        : ahoraMs
+      if (!Number.isNaN(tsCanc) && tsCanc < hace24HorasMs) {
+        return
+      }
+    }
     if (info.etapa_ruta === 'rendido_dueno') {
       const refIso =
         info.fecha_rendicion || info.fecha_cobro || info.fecha_despacho
-      const ts = refIso ? new Date(refIso).getTime() : Date.now()
+      const ts = refIso ? new Date(refIso).getTime() : ahoraMs
       if (!Number.isNaN(ts) && ts < hace90DiasMs) {
         return
       }
@@ -1146,24 +1423,35 @@ export async function obtenerMapaCustodiaRespaldo(forzarRecarga = false) {
     }
 
     try {
-      // Verificar primero con .list() (200 OK siempre) para evitar cualquier 400 en consola si aún no existe
+      // Consultar directo en PostgreSQL (storage.objects vía .list) el snapshot más reciente para evitar caché CDN entre equipos
       const { data: listaArchivos, error: errList } = await supabaseAdmin.storage
         .from('productos')
-        .list('config', { limit: 15, search: 'custodia_preventas.json' })
+        .list('config', { limit: 30, search: 'custodia_preventas' })
 
-      const existeArchivo =
-        !errList &&
-        Array.isArray(listaArchivos) &&
-        listaArchivos.some((f) => f.name === 'custodia_preventas.json')
+      const candidatos = (!errList && Array.isArray(listaArchivos) ? listaArchivos : [])
+        .map((f) => f?.name || '')
+        .filter(
+          (name) =>
+            name === 'custodia_preventas.json' ||
+            /^custodia_preventas_\d+\.json$/.test(name)
+        )
+        .sort((a, b) => {
+          const tsA = Number((a.match(/(\d+)/) || [])[1] || 0)
+          const tsB = Number((b.match(/(\d+)/) || [])[1] || 0)
+          return tsB - tsA
+        })
 
-      if (existeArchivo) {
+      if (candidatos.length > 0) {
+        const rutaMasReciente = `config/${candidatos[0]}`
         const { data, error } = await supabaseAdmin.storage
           .from('productos')
-          .download(CUSTODIA_STORAGE_PATH)
+          .download(rutaMasReciente)
         if (!error && data) {
           const txt = await data.text()
           const remoto = JSON.parse(txt || '{}')
-          const combinado = podarCustodiaAntigua({ ...local, ...remoto })
+          const combinado = podarCustodiaAntigua(
+            combinarMapasCustodia(local, remoto)
+          )
           escribirCustodiaLocal(combinado)
           _cacheCustodiaMemoria = combinado
           _cacheCustodiaTimestamp = Date.now()
@@ -1194,16 +1482,38 @@ async function guardarMapaCustodiaRespaldo(nuevoMapa) {
 
   if (typeof navigator !== 'undefined' && navigator.onLine) {
     try {
+      const nuevoNombre = `custodia_preventas_${Date.now()}.json`
+      const nuevaRuta = `config/${nuevoNombre}`
       const blob = new Blob([JSON.stringify(limpio)], {
         type: 'application/json',
       })
-      await supabaseAdmin.storage
+      const { error: upErr } = await supabaseAdmin.storage
         .from('productos')
-        .upload(CUSTODIA_STORAGE_PATH, blob, {
+        .upload(nuevaRuta, blob, {
           upsert: true,
           contentType: 'application/json',
           cacheControl: '0',
         })
+
+      if (!upErr) {
+        // Limpiar versiones previas para no acumular archivos en Storage
+        const { data: previos } = await supabaseAdmin.storage
+          .from('productos')
+          .list('config', { limit: 30, search: 'custodia_preventas' })
+        const obsoletos = (previos || [])
+          .map((f) => f?.name)
+          .filter(
+            (name) =>
+              name &&
+              name !== nuevoNombre &&
+              (name === 'custodia_preventas.json' ||
+                /^custodia_preventas_\d+\.json$/.test(name))
+          )
+          .map((name) => `config/${name}`)
+        if (obsoletos.length > 0) {
+          await supabaseAdmin.storage.from('productos').remove(obsoletos)
+        }
+      }
     } catch {
       // Si falla red temporalmente, queda respaldado en localStorage
     }
@@ -1503,6 +1813,145 @@ export async function confirmarRendicionDineroAlDueno({
     rendidosCount: idsValidos.length,
     fecha_rendicion: ahoraIso,
     recibido_por_nombre: adminNombre,
+  }
+}
+
+/**
+ * Cancela y elimina un pedido de preventa de forma segura:
+ * - Si el pedido aún estaba en `pendiente_entrega` (Etapa 1), solo elimina sus líneas y cabecera.
+ * - Si el pedido ya había sido despachado (`estado === 'entregado'`), primero devuelve
+ *   exactamente las botellas descontadas al inventario de `Tienda Central`, limpia cualquier
+ *   registro de custodia/abonos y elimina el pedido.
+ */
+export async function cancelarPedidoPreventa({ pedido }) {
+  if (!pedido?.id) {
+    throw new Error('Pedido inválido para cancelar.')
+  }
+
+  const yaDescontoStock = pedido.estado === 'entregado'
+
+  if (yaDescontoStock) {
+    // 1. Obtener ID de ubicación Tienda Central
+    const { data: ubicaciones, error: errUbic } = await supabaseAdmin
+      .from('ubicaciones')
+      .select('id, tipo')
+    if (errUbic) {
+      throw new Error(
+        errUbic.message || 'No se pudo consultar Tienda Central para devolver el stock.'
+      )
+    }
+    const centralId = ubicaciones?.find((u) => u.tipo === 'central')?.id
+    if (!centralId) {
+      throw new Error('No se encontró la ubicación de Tienda Central.')
+    }
+
+    // 2. Obtener detalles del pedido para calcular cuántas botellas devolver por producto
+    let detalles = Array.isArray(pedido.venta_detalles) ? pedido.venta_detalles : []
+    if (detalles.length === 0) {
+      const { data: detBd } = await supabaseAdmin
+        .from('venta_detalles')
+        .select('producto_id, tipo_venta, cantidad, unidades_totales_descontar, productos(unidades_por_paquete)')
+        .eq('venta_id', pedido.id)
+      detalles = detBd || []
+    }
+
+    const botellasPorProducto = {}
+    detalles.forEach((det) => {
+      if (!det?.producto_id) return
+      const unidPorPaq = Math.max(
+        1,
+        Number(det.productos?.unidades_por_paquete) || 6
+      )
+      const bot =
+        Number(det.unidades_totales_descontar) ||
+        (det.tipo_venta === 'paquete' || det.tipo_venta === 'bono_promocion'
+          ? (Number(det.cantidad) || 0) * unidPorPaq
+          : Number(det.cantidad) || 0)
+
+      if (bot > 0) {
+        botellasPorProducto[det.producto_id] =
+          (botellasPorProducto[det.producto_id] || 0) + bot
+      }
+    })
+
+    // 3. Devolver botellas al stock de Tienda Central
+    for (const [prodId, botDevolver] of Object.entries(botellasPorProducto)) {
+      const { data: filaInv } = await supabaseAdmin
+        .from('inventario')
+        .select('id, stock_unidades')
+        .eq('ubicacion_id', centralId)
+        .eq('producto_id', prodId)
+        .maybeSingle()
+
+      if (filaInv?.id) {
+        const nuevoStock = (Number(filaInv.stock_unidades) || 0) + botDevolver
+        const { error: errUpdInv } = await supabaseAdmin
+          .from('inventario')
+          .update({ stock_unidades: nuevoStock })
+          .eq('id', filaInv.id)
+        if (errUpdInv) throw errUpdInv
+      } else {
+        const { error: errInsInv } = await supabaseAdmin
+          .from('inventario')
+          .insert([
+            {
+              ubicacion_id: centralId,
+              producto_id: prodId,
+              stock_unidades: botDevolver,
+            },
+          ])
+        if (errInsInv) throw errInsInv
+      }
+    }
+
+    // 4. Limpiar abonos de crédito asociados si existieran
+    await supabaseAdmin.from('abonos_credito').delete().eq('venta_id', pedido.id)
+  }
+
+  // 5. Eliminar líneas en `venta_detalles`
+  const { error: errDetAdmin } = await supabaseAdmin
+    .from('venta_detalles')
+    .delete()
+    .eq('venta_id', pedido.id)
+
+  if (errDetAdmin) {
+    const { error: errDetFb } = await supabase
+      .from('venta_detalles')
+      .delete()
+      .eq('venta_id', pedido.id)
+    if (errDetFb) throw errDetFb
+  }
+
+  // 6. Eliminar cabecera en `ventas`
+  const { error: errVentaAdmin } = await supabaseAdmin
+    .from('ventas')
+    .delete()
+    .eq('id', pedido.id)
+
+  if (errVentaAdmin) {
+    const { error: errVentaFb } = await supabase
+      .from('ventas')
+      .delete()
+      .eq('id', pedido.id)
+    if (errVentaFb) throw errVentaFb
+  }
+
+  // 7. Marcar registro de custodia como cancelado (evita que caché CDN reaparezca el ID)
+  const mapaActual = await obtenerMapaCustodiaRespaldo(true)
+  if (mapaActual && mapaActual[pedido.id]) {
+    const nuevoMapa = {
+      ...mapaActual,
+      [pedido.id]: {
+        etapa_ruta: 'cancelado',
+        fecha_cancelacion: new Date().toISOString(),
+      },
+    }
+    await guardarMapaCustodiaRespaldo(nuevoMapa)
+  }
+
+  return {
+    cancelado: true,
+    stockDevuelto: yaDescontoStock,
   }
 }
 

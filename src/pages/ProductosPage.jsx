@@ -18,13 +18,24 @@ import {
   LayoutGrid,
   List,
   Layers,
+  Image as ImageIcon,
 } from 'lucide-react'
-import { supabase, subirImagenProductoSupabase } from '../lib/supabase'
+import {
+  supabase,
+  subirImagenProductoSupabase,
+  subirLogoMarcaSupabase,
+  obtenerMapaLogosMarcas,
+  obtenerLogoDeMarca,
+  guardarLogoMarcaRespaldo,
+  renombrarLogoMarcaRespaldo,
+  enriquecerMarcasConLogo,
+} from '../lib/supabase'
 import { useRole } from '../context/RoleContext'
 import { formatearStock } from '../utils/stock'
 import { quitarFondoEnNavegador } from '../utils/imageProcessor'
 import BottleVisual from '../components/BottleVisual'
 import PaginationBar from '../components/PaginationBar'
+import { BrandBoxesGrid, BrandActiveBar } from '../components/BrandBoxesGrid'
 
 const TAMANO_PROD_TARJETAS = 18
 const TAMANO_PROD_TABLA = 25
@@ -54,14 +65,16 @@ export default function ProductosPage() {
 
   const [productos, setProductos] = useState([])
   const [marcasTabla, setMarcasTabla] = useState([])
+  const [mapaLogosMarcas, setMapaLogosMarcas] = useState({})
   const [ubicaciones, setUbicaciones] = useState([])
   const [inventario, setInventario] = useState([])
   const [cargando, setCargando] = useState(true)
   const [errorMsg, setErrorMsg] = useState('')
 
   // Filtros y Modo de Vista ('tarjetas' | 'lista')
+  // `marcaSeleccionada === null` muestra primero las Cajas de Marcas; un string filtra esa marca (o 'TODAS' para ver todo junto)
   const [busqueda, setBusqueda] = useState('')
-  const [marcaSeleccionada, setMarcaSeleccionada] = useState('TODAS')
+  const [marcaSeleccionada, setMarcaSeleccionada] = useState(null)
   const [mostrarInactivos, setMostrarInactivos] = useState(false)
   const [modoVista, setModoVista] = useState('tarjetas')
   const [paginaActual, setPaginaActual] = useState(1)
@@ -82,9 +95,16 @@ export default function ProductosPage() {
   const [nombreNuevaMarcaInline, setNombreNuevaMarcaInline] = useState('')
   const [creandoMarcaInline, setCreandoMarcaInline] = useState(false)
 
-  // Modal de Gestión Completa de Marcas
+  // Modal de Gestión Completa de Marcas + Subida de Logo Oficial
   const [modalMarcasAbierto, setModalMarcasAbierto] = useState(false)
   const [nuevaMarcaInput, setNuevaMarcaInput] = useState('')
+  const [nuevoLogoBlob, setNuevoLogoBlob] = useState(null)
+  const [nuevoLogoPreview, setNuevoLogoPreview] = useState('')
+  const [procesandoFondoLogoNuevo, setProcesandoFondoLogoNuevo] = useState(false)
+  const [marcaObjetivoLogo, setMarcaObjetivoLogo] = useState('')
+  const [subiendoLogoDeMarca, setSubiendoLogoDeMarca] = useState('')
+  const nuevoLogoInputRef = useRef(null)
+  const logoExistenteInputRef = useRef(null)
   const [marcaEditandoId, setMarcaEditandoId] = useState(null)
   const [marcaEditandoNombre, setMarcaEditandoNombre] = useState('')
   const [procesandoMarca, setProcesandoMarca] = useState(false)
@@ -105,19 +125,22 @@ export default function ProductosPage() {
     setCargando(true)
     setErrorMsg('')
     try {
-      const [resProd, resMarcas, resUbic, resInv] = await Promise.all([
+      const [resProd, resMarcas, resUbic, resInv, mapaLogos] = await Promise.all([
         supabase.from('productos').select('*').order('nombre', { ascending: true }),
         supabase.from('marcas').select('*').order('nombre', { ascending: true }),
         supabase.from('ubicaciones').select('*'),
         supabase.from('inventario').select('*'),
+        obtenerMapaLogosMarcas(true),
       ])
 
       if (resProd.error) throw resProd.error
       if (resUbic.error) throw resUbic.error
       if (resInv.error) throw resInv.error
 
+      const marcasConLogo = await enriquecerMarcasConLogo(resMarcas.data || [])
       setProductos(resProd.data || [])
-      setMarcasTabla(resMarcas.data || [])
+      setMarcasTabla(marcasConLogo)
+      setMapaLogosMarcas(mapaLogos || {})
       setUbicaciones(resUbic.data || [])
       setInventario(resInv.data || [])
     } catch (err) {
@@ -198,12 +221,64 @@ export default function ProductosPage() {
     return Array.from(new Set(activas)).sort((a, b) => a.localeCompare(b, 'es'))
   }, [marcasTabla, formData.marca])
 
+  // Tarjetas resumen por Marca para la vista inicial de Cajas de Marcas (Logo oficial o Nombre Grande, CERO botellas)
+  const tarjetasMarcas = useMemo(() => {
+    return marcasDisponibles.map((nombreMarca) => {
+      const prodsMarca = productos.filter(
+        (p) =>
+          (mostrarInactivos || p.activo !== false) &&
+          (p.marca || '').trim() === nombreMarca
+      )
+      const filaMarca = marcasTabla.find(
+        (m) => (m.nombre || '').trim().toLowerCase() === nombreMarca.toLowerCase()
+      )
+      const logoUrl =
+        filaMarca?.logo_url || obtenerLogoDeMarca(nombreMarca, mapaLogosMarcas)
+
+      let sinCentralCount = 0
+      if (!ocultarStock) {
+        prodsMarca.forEach((p) => {
+          const stCen = stockPorProducto[p.id]?.central || 0
+          if (stCen <= 0) sinCentralCount += 1
+        })
+      }
+
+      return {
+        nombre: nombreMarca,
+        logoUrl,
+        cantidadProductos: prodsMarca.length,
+        permiteSurtido: prodsMarca.some((p) => Boolean(p.permite_surtido)),
+        alertaTexto:
+          !ocultarStock && prodsMarca.length > 0 && sinCentralCount > 0
+            ? `${sinCentralCount} sin Central`
+            : '',
+        alertaTipo: 'warning',
+      }
+    })
+  }, [
+    marcasDisponibles,
+    marcasTabla,
+    mapaLogosMarcas,
+    productos,
+    mostrarInactivos,
+    ocultarStock,
+    stockPorProducto,
+  ])
+
+  const mostrarCajasMarcas = marcaSeleccionada === null && !busqueda.trim()
+
   // Filtrado de productos por buscador, marca y estado activo
   const productosFiltrados = useMemo(() => {
     const q = busqueda.trim().toLowerCase()
     return productos.filter((p) => {
       if (!mostrarInactivos && p.activo === false) return false
-      if (marcaSeleccionada !== 'TODAS' && p.marca !== marcaSeleccionada) return false
+      if (
+        marcaSeleccionada &&
+        marcaSeleccionada !== 'TODAS' &&
+        (p.marca || '').trim() !== marcaSeleccionada
+      ) {
+        return false
+      }
       if (!q) return true
       const coincideNombre = p.nombre?.toLowerCase().includes(q)
       const coincideMarca = p.marca?.toLowerCase().includes(q)
@@ -212,15 +287,104 @@ export default function ProductosPage() {
     })
   }, [productos, busqueda, marcaSeleccionada, mostrarInactivos])
 
-  // ================= FUNCIONES DE GESTIÓN DE MARCAS =================
+  // ================= FUNCIONES DE GESTIÓN DE MARCAS Y LOGOS =================
   const abrirModalGestionMarcas = () => {
     if (!esAdmin) return
     setNuevaMarcaInput('')
+    setNuevoLogoBlob(null)
+    setNuevoLogoPreview('')
     setMarcaEditandoId(null)
     setMarcaEditandoNombre('')
     setErrorModalMarcas('')
     setExitoModalMarcas('')
     setModalMarcasAbierto(true)
+  }
+
+  const seleccionarArchivoNuevoLogo = (file) => {
+    if (!file || !file.type.startsWith('image/')) return
+    setNuevoLogoBlob(file)
+    setNuevoLogoPreview(URL.createObjectURL(file))
+  }
+
+  const quitarFondoLogoNuevo = async () => {
+    if (!nuevoLogoBlob) return
+    setProcesandoFondoLogoNuevo(true)
+    setErrorModalMarcas('')
+    try {
+      const sinFondo = await quitarFondoEnNavegador(nuevoLogoBlob, false)
+      setNuevoLogoBlob(sinFondo)
+      setNuevoLogoPreview(URL.createObjectURL(sinFondo))
+    } catch {
+      setErrorModalMarcas('No se pudo recortar el fondo del logo.')
+    } finally {
+      setProcesandoFondoLogoNuevo(false)
+    }
+  }
+
+  const subirYAsignarLogoAMarcaExistente = async (
+    nombreMarca,
+    file,
+    recortarFondo = false
+  ) => {
+    if (!nombreMarca || !file) return
+    setSubiendoLogoDeMarca(nombreMarca)
+    setErrorModalMarcas('')
+    setExitoModalMarcas('')
+    try {
+      let blobFinal = file
+      if (recortarFondo) {
+        blobFinal = await quitarFondoEnNavegador(file, false)
+      }
+      const publicUrl = await subirLogoMarcaSupabase(blobFinal, nombreMarca)
+      const nuevoMapa = await guardarLogoMarcaRespaldo(nombreMarca, publicUrl)
+      setMapaLogosMarcas(nuevoMapa)
+      setMarcasTabla((prev) =>
+        prev.map((m) =>
+          (m.nombre || '').trim().toLowerCase() === nombreMarca.trim().toLowerCase()
+            ? { ...m, logo_url: publicUrl }
+            : m
+        )
+      )
+      setExitoModalMarcas(`Logo actualizado para "${nombreMarca}".`)
+    } catch (err) {
+      setErrorModalMarcas(err.message || 'No se pudo subir el logo de la marca.')
+    } finally {
+      setSubiendoLogoDeMarca('')
+      setMarcaObjetivoLogo('')
+    }
+  }
+
+  const quitarLogoDeMarcaExistente = async (nombreMarca) => {
+    if (!nombreMarca) return
+    setSubiendoLogoDeMarca(nombreMarca)
+    try {
+      const nuevoMapa = await guardarLogoMarcaRespaldo(nombreMarca, '')
+      setMapaLogosMarcas(nuevoMapa)
+      setMarcasTabla((prev) =>
+        prev.map((m) =>
+          (m.nombre || '').trim().toLowerCase() === nombreMarca.trim().toLowerCase()
+            ? { ...m, logo_url: '' }
+            : m
+        )
+      )
+      setExitoModalMarcas(`Logo quitado de "${nombreMarca}".`)
+    } finally {
+      setSubiendoLogoDeMarca('')
+    }
+  }
+
+  const recortarFondoLogoDeMarcaExistente = async (nombreMarca, logoUrlActual) => {
+    if (!nombreMarca || !logoUrlActual) return
+    setSubiendoLogoDeMarca(nombreMarca)
+    setErrorModalMarcas('')
+    try {
+      const resp = await fetch(logoUrlActual)
+      const blob = await resp.blob()
+      await subirYAsignarLogoAMarcaExistente(nombreMarca, blob, true)
+    } catch {
+      setSubiendoLogoDeMarca('')
+      setErrorModalMarcas('Sube el logo desde tu dispositivo para quitarle el fondo.')
+    }
   }
 
   const agregarNuevaMarca = async (e) => {
@@ -246,11 +410,26 @@ export default function ProductosPage() {
         throw error
       }
 
+      let logoSubidoUrl = ''
+      if (nuevoLogoBlob) {
+        logoSubidoUrl = await subirLogoMarcaSupabase(nuevoLogoBlob, data.nombre)
+        const nuevoMapa = await guardarLogoMarcaRespaldo(
+          data.nombre,
+          logoSubidoUrl
+        )
+        setMapaLogosMarcas(nuevoMapa)
+      }
+
+      const marcaConLogo = { ...data, logo_url: logoSubidoUrl }
       setMarcasTabla((prev) =>
-        [...prev, data].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
+        [...prev, marcaConLogo].sort((a, b) =>
+          a.nombre.localeCompare(b.nombre, 'es')
+        )
       )
       setNuevaMarcaInput('')
-      setExitoModalMarcas(`Marca "${data.nombre}" agregada.`)
+      setNuevoLogoBlob(null)
+      setNuevoLogoPreview('')
+      setExitoModalMarcas(`Marca "${data.nombre}" creada.`)
     } catch (err) {
       setErrorModalMarcas(err.message || 'No se pudo agregar la marca.')
     } finally {
@@ -343,6 +522,8 @@ export default function ProductosPage() {
         .eq('marca', nuevoNombre)
         .eq('permite_surtido', true)
 
+      await renombrarLogoMarcaRespaldo(viejoNombre, nuevoNombre)
+
       if (marcaSeleccionada === viejoNombre) {
         setMarcaSeleccionada(nuevoNombre)
       }
@@ -379,7 +560,7 @@ export default function ProductosPage() {
 
         setMarcasTabla((prev) => prev.filter((m) => m.id !== marcaObj.id))
         if (marcaSeleccionada === marcaObj.nombre) {
-          setMarcaSeleccionada('TODAS')
+          setMarcaSeleccionada(null)
         }
         setExitoModalMarcas(`Marca "${marcaObj.nombre}" eliminada.`)
       } else {
@@ -418,16 +599,18 @@ export default function ProductosPage() {
     setEstadoProgresoIA('')
   }
 
-  const abrirModalNuevo = () => {
+  const abrirModalNuevo = (marcaForzada = null) => {
     if (!esAdmin) return
     setProductoEditando(null)
-    const marcaPorDefecto =
-      marcaSeleccionada !== 'TODAS'
+    const marcaContexto =
+      typeof marcaForzada === 'string' && marcaForzada
+        ? marcaForzada
+        : marcaSeleccionada && marcaSeleccionada !== 'TODAS'
         ? marcaSeleccionada
         : marcasTabla.find((m) => m.activo !== false)?.nombre || ''
     setFormData({
       ...FORM_INICIAL,
-      marca: marcaPorDefecto,
+      marca: marcaContexto,
     })
     setMostrarNuevaMarcaInline(false)
     setNombreNuevaMarcaInline('')
@@ -669,7 +852,7 @@ export default function ProductosPage() {
 
   return (
     <div className="space-y-5 pb-12">
-      {/* ================= CABECERA MINIMALISTA (ESTILO LINEAR / FINTECH) ================= */}
+      {/* ================= CABECERA MINIMALISTA (CAJAS DE MARCAS -> BEBIDAS) ================= */}
       <div className="space-y-3.5">
         {/* Fila 1: Título + Contador | Acciones */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -678,8 +861,13 @@ export default function ProductosPage() {
               Productos y Precios
             </h1>
             <span className="text-xs font-medium text-slate-400 dark:text-slate-500 tabular-nums">
-              {productosFiltrados.length}{' '}
-              {productosFiltrados.length === 1 ? 'ítem' : 'ítems'}
+              {mostrarCajasMarcas
+                ? `${tarjetasMarcas.length} ${
+                    tarjetasMarcas.length === 1 ? 'marca' : 'marcas'
+                  }`
+                : `${productosFiltrados.length} ${
+                    productosFiltrados.length === 1 ? 'bebida' : 'bebidas'
+                  }`}
             </span>
           </div>
 
@@ -702,26 +890,28 @@ export default function ProductosPage() {
                   className="h-8.5 px-3 rounded-lg bg-white dark:bg-white/[0.04] border border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-white/[0.08] text-xs font-medium inline-flex items-center gap-1.5 transition cursor-pointer"
                 >
                   <Tag size={14} className="text-amber-500" />
-                  <span>Marcas</span>
+                  <span>Gestionar Marcas</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={abrirModalNuevo}
-                  className="h-8.5 px-3.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 shadow-2xs transition cursor-pointer"
-                >
-                  <Plus size={15} className="stroke-[2.5]" />
-                  <span>Nuevo Producto</span>
-                </button>
+                {/* REGLA UX: Solo cuando entras dentro de una Marca aparece el botón para crear productos de esa marca */}
+                {marcaSeleccionada && marcaSeleccionada !== 'TODAS' && (
+                  <button
+                    type="button"
+                    onClick={() => abrirModalNuevo(marcaSeleccionada)}
+                    className="h-8.5 px-3.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 shadow-2xs transition cursor-pointer"
+                  >
+                    <Plus size={15} className="stroke-[2.5]" />
+                    <span>Nuevo en {marcaSeleccionada}</span>
+                  </button>
+                )}
               </>
             )}
           </div>
         </div>
 
-        {/* Fila 2: Buscador + Píldoras limpias de Marcas + Controles de Vista */}
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
-          {/* Buscador compacto */}
-          <div className="relative w-full lg:w-72 shrink-0">
+        {/* Fila 2: Buscador rápido directo + Controles cuando se está dentro de una marca */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="relative w-full sm:w-80">
             <Search
               size={15}
               className="text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
@@ -730,54 +920,28 @@ export default function ProductosPage() {
               type="text"
               value={busqueda}
               onChange={(e) => setBusqueda(e.target.value)}
-              placeholder="Buscar bebida, sabor o marca..."
-              className="w-full h-8.5 pl-8.5 pr-7 rounded-lg bg-white dark:bg-[#161922] border border-slate-200/80 dark:border-white/[0.08] text-xs sm:text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-slate-400 dark:focus:border-white/25 transition"
+              placeholder={
+                marcaSeleccionada && marcaSeleccionada !== 'TODAS'
+                  ? `Buscar dentro de ${marcaSeleccionada}...`
+                  : 'Buscar bebida o sabor directo...'
+              }
+              className="w-full h-9 pl-9 pr-8 rounded-xl bg-white dark:bg-[#161922] border border-slate-200/80 dark:border-white/[0.08] text-xs sm:text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-amber-500/60 transition"
             />
             {busqueda && (
               <button
                 type="button"
                 onClick={() => setBusqueda('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
               >
                 <X size={14} />
               </button>
             )}
           </div>
 
-          <div className="flex items-center justify-between gap-3 flex-1 min-w-0">
-            {/* Píldoras de Marcas sin bordes pesados (Cero ruido visual) */}
-            <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 min-w-0">
-              <button
-                type="button"
-                onClick={() => setMarcaSeleccionada('TODAS')}
-                className={`h-7.5 px-3 rounded-lg text-xs transition shrink-0 cursor-pointer ${
-                  marcaSeleccionada === 'TODAS'
-                    ? 'bg-slate-900 text-white dark:bg-white/15 dark:text-white font-medium'
-                    : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/5'
-                }`}
-              >
-                Todas
-              </button>
-              {marcasDisponibles.map((marca) => (
-                <button
-                  key={marca}
-                  type="button"
-                  onClick={() => setMarcaSeleccionada(marca)}
-                  className={`h-7.5 px-3 rounded-lg text-xs transition shrink-0 cursor-pointer ${
-                    marcaSeleccionada === marca
-                      ? 'bg-slate-900 text-white dark:bg-white/15 dark:text-white font-medium'
-                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/5'
-                  }`}
-                >
-                  {marca}
-                </button>
-              ))}
-            </div>
-
-            {/* Controles derechos: Filtro Inactivos + Conmutador Tarjetas / Tabla de Precios */}
-            <div className="flex items-center gap-2.5 shrink-0">
+          {!mostrarCajasMarcas && (
+            <div className="flex items-center gap-2.5 ml-auto">
               {esAdmin && (
-                <label className="hidden sm:flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none">
+                <label className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     checked={mostrarInactivos}
@@ -788,38 +952,67 @@ export default function ProductosPage() {
                 </label>
               )}
 
-              {/* Switcher de Vista: Galería vs Lista de Precios */}
               <div className="inline-flex items-center p-0.5 rounded-lg bg-slate-200/70 dark:bg-white/[0.06]">
                 <button
                   type="button"
                   onClick={() => setModoVista('tarjetas')}
                   title="Vista de tarjetas"
-                  className={`h-7 px-2 rounded-md text-xs font-medium inline-flex items-center gap-1 transition cursor-pointer ${
+                  className={`h-7 px-2.5 rounded-md text-xs font-medium inline-flex items-center gap-1 transition cursor-pointer ${
                     modoVista === 'tarjetas'
                       ? 'bg-white dark:bg-[#1E2230] text-slate-900 dark:text-white shadow-2xs'
                       : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
                   }`}
                 >
                   <LayoutGrid size={13} />
-                  <span className="hidden md:inline">Tarjetas</span>
+                  <span>Tarjetas</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setModoVista('lista')}
                   title="Vista de tabla rápida de precios"
-                  className={`h-7 px-2 rounded-md text-xs font-medium inline-flex items-center gap-1 transition cursor-pointer ${
+                  className={`h-7 px-2.5 rounded-md text-xs font-medium inline-flex items-center gap-1 transition cursor-pointer ${
                     modoVista === 'lista'
                       ? 'bg-white dark:bg-[#1E2230] text-slate-900 dark:text-white shadow-2xs'
                       : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
                   }`}
                 >
                   <List size={13} />
-                  <span className="hidden md:inline">Precios</span>
+                  <span>Precios</span>
                 </button>
               </div>
             </div>
-          </div>
+          )}
         </div>
+
+        {/* Barra de retorno a Marcas cuando el usuario entró a una caja de marca */}
+        {!mostrarCajasMarcas && (
+          <BrandActiveBar
+            marcaActiva={
+              marcaSeleccionada || `Resultados para "${busqueda.trim()}"`
+            }
+            logoUrl={
+              marcaSeleccionada && marcaSeleccionada !== 'TODAS'
+                ? obtenerLogoDeMarca(marcaSeleccionada, mapaLogosMarcas)
+                : ''
+            }
+            cantidadItems={productosFiltrados.length}
+            onVolverMarcas={() => {
+              setMarcaSeleccionada(null)
+              setBusqueda('')
+            }}
+          >
+            {esAdmin && marcaSeleccionada && marcaSeleccionada !== 'TODAS' && (
+              <button
+                type="button"
+                onClick={() => abrirModalNuevo(marcaSeleccionada)}
+                className="h-8.5 px-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 shadow-2xs transition cursor-pointer"
+              >
+                <Plus size={15} className="stroke-[2.5]" />
+                <span>Registrar bebida</span>
+              </button>
+            )}
+          </BrandActiveBar>
+        )}
       </div>
 
       {errorMsg && (
@@ -829,32 +1022,50 @@ export default function ProductosPage() {
         </div>
       )}
 
-      {/* ================= CONTENIDO PRINCIPAL: TARJETAS O TABLA DE PRECIOS ================= */}
+      {/* ================= CONTENIDO PRINCIPAL: NIVEL 1 (CAJAS DE MARCAS) -> NIVEL 2 (BEBIDAS DE LA MARCA) ================= */}
       {cargando ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {[1, 2, 3, 4, 5, 6].map((n) => (
+        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3.5">
+          {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
             <div
               key={n}
-              className="bg-[#F6F5F2] rounded-2xl p-5 h-52 animate-pulse flex items-center gap-4"
-            >
-              <div className="w-[32%] h-36 bg-stone-200/70 rounded-xl" />
-              <div className="w-[68%] space-y-3">
-                <div className="h-3 bg-stone-200 rounded w-1/2" />
-                <div className="h-5 bg-stone-200 rounded w-4/5" />
-                <div className="h-12 bg-stone-200/80 rounded-lg" />
-              </div>
-            </div>
+              className="bg-white dark:bg-[#161922] border border-slate-200/70 dark:border-white/[0.06] rounded-2xl p-4 h-44 animate-pulse"
+            />
           ))}
         </div>
+      ) : mostrarCajasMarcas ? (
+        <BrandBoxesGrid
+          marcas={tarjetasMarcas}
+          onSelectMarca={(nombreMarca) => setMarcaSeleccionada(nombreMarca)}
+          onVerTodas={() => setMarcaSeleccionada('TODAS')}
+          onCrearMarca={esAdmin ? abrirModalGestionMarcas : null}
+          tituloSeccion="Marcas registradas"
+          textoVerTodas="Ver todas las bebidas"
+        />
       ) : productosFiltrados.length === 0 ? (
-        <div className="bg-[#F6F5F2] rounded-2xl p-10 text-center space-y-2">
-          <Package className="w-8 h-8 text-stone-400 mx-auto" />
-          <div className="text-sm font-semibold text-stone-800">
-            No se encontraron bebidas con ese criterio
+        <div className="bg-white dark:bg-[#161922] border border-slate-200/80 dark:border-white/[0.08] rounded-2xl p-10 text-center space-y-3">
+          <Package className="w-8 h-8 text-slate-400 mx-auto" />
+          <div className="text-sm font-semibold text-slate-900 dark:text-white">
+            {marcaSeleccionada && marcaSeleccionada !== 'TODAS' && !busqueda.trim()
+              ? `Aún no hay bebidas registradas en la marca "${marcaSeleccionada}"`
+              : 'No se encontraron bebidas con ese criterio'}
           </div>
-          <p className="text-xs text-stone-500">
-            Prueba cambiando el término de búsqueda o seleccionando otra marca.
-          </p>
+          {esAdmin &&
+          marcaSeleccionada &&
+          marcaSeleccionada !== 'TODAS' &&
+          !busqueda.trim() ? (
+            <button
+              type="button"
+              onClick={() => abrirModalNuevo(marcaSeleccionada)}
+              className="h-9 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 transition cursor-pointer"
+            >
+              <Plus size={15} className="stroke-[2.5]" />
+              <span>Registrar primera bebida de {marcaSeleccionada}</span>
+            </button>
+          ) : (
+            <p className="text-xs text-slate-400">
+              Prueba cambiando el texto de búsqueda o vuelve a todas las marcas.
+            </p>
+          )}
         </div>
       ) : modoVista === 'tarjetas' ? (
         /* ================= MODO 1: GALERÍA EDITORIAL DE TARJETAS (CERO RUIDO VISUAL) ================= */
@@ -952,50 +1163,43 @@ export default function ProductosPage() {
                       )}
                     </div>
 
-                    {/* Línea 3: Matriz de Precios Escaneable (Unidad | Paquete | Mayorista/Promo) */}
-                    <div
-                      className={`grid ${
-                        esFijo ? 'grid-cols-2' : 'grid-cols-3'
-                      } divide-x divide-stone-200/80 dark:divide-white/[0.08] tabular-nums pt-0.5`}
-                    >
-                      {/* 1) Unidad / Botella */}
-                      <div className="pr-2.5">
-                        <span className="block text-[10px] font-medium text-stone-400 uppercase tracking-wider">
-                          Unidad
+                    {/* Precios en 3 filas horizontales limpias (Cero cortes de línea) */}
+                    <div className="divide-y divide-stone-200/75 dark:divide-white/[0.06] tabular-nums text-xs">
+                      <div className="py-1 flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-medium uppercase tracking-wide text-stone-400 dark:text-slate-400">
+                          Botella
                         </span>
-                        <span className="block text-xs sm:text-sm font-semibold text-stone-700 mt-0.5">
+                        <span className="font-semibold text-stone-700 dark:text-slate-200 whitespace-nowrap">
                           {formatearPrecioLimpio(prod.precio_unidad)}
                         </span>
                       </div>
 
-                      {/* 2) Paquete Normal */}
-                      <div className="px-2.5">
-                        <span className="block text-[10px] font-medium text-stone-400 uppercase tracking-wider">
+                      <div className="py-1 flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-medium uppercase tracking-wide text-stone-400 dark:text-slate-400">
                           Paquete
                         </span>
-                        <span className="block text-sm sm:text-base font-bold text-stone-900 mt-0.5">
+                        <span className="font-bold text-stone-900 dark:text-white whitespace-nowrap">
                           {formatearPrecioLimpio(prod.precio_paquete_menor)}
                         </span>
                       </div>
 
-                      {/* 3) Mayorista o Bonificación */}
                       {!esFijo && (
-                        <div className="pl-2.5">
+                        <div className="py-1 flex items-center justify-between gap-2">
                           {esBonificacion ? (
                             <>
-                              <span className="block text-[10px] font-semibold text-amber-700 uppercase tracking-wider">
+                              <span className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
                                 Promo
                               </span>
-                              <span className="block text-xs sm:text-sm font-extrabold text-amber-700 mt-0.5">
+                              <span className="font-extrabold text-amber-700 dark:text-amber-400 whitespace-nowrap">
                                 {bonifCompra}+{bonifRegalo} Gratis
                               </span>
                             </>
                           ) : (
                             <>
-                              <span className="block text-[10px] font-semibold text-amber-700 uppercase tracking-wider">
-                                Mayor (+{minMayor})
+                              <span className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                                Mayor (+{minMayor} paq)
                               </span>
-                              <span className="block text-sm sm:text-base font-extrabold text-amber-700 mt-0.5">
+                              <span className="font-extrabold text-amber-700 dark:text-amber-400 whitespace-nowrap">
                                 {formatearPrecioLimpio(prod.precio_paquete_mayor)}
                               </span>
                             </>
@@ -1262,27 +1466,114 @@ export default function ProductosPage() {
                 </div>
               )}
 
-              {/* Formulario rápido para agregar marca */}
-              <form onSubmit={agregarNuevaMarca} className="flex gap-2">
-                <input
-                  type="text"
-                  value={nuevaMarcaInput}
-                  onChange={(e) => setNuevaMarcaInput(e.target.value)}
-                  placeholder="Nueva marca (ej. Huari, Pepsi)..."
-                  className="flex-1 h-9 px-3 rounded-lg bg-slate-50 dark:bg-[#1A1E29] border border-slate-200 dark:border-white/10 text-xs sm:text-sm text-slate-900 dark:text-white focus:border-amber-500 focus:outline-none"
-                />
-                <button
-                  type="submit"
-                  disabled={procesandoMarca || !nuevaMarcaInput.trim()}
-                  className="h-9 px-3.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1 shrink-0 transition cursor-pointer disabled:opacity-50"
-                >
-                  <Plus size={15} className="stroke-[2.5]" />
-                  <span>Agregar</span>
-                </button>
+              {/* Input oculto para subir/cambiar logo de una marca ya creada */}
+              <input
+                ref={logoExistenteInputRef}
+                type="file"
+                accept="image/*"
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file && marcaObjetivoLogo) {
+                    subirYAsignarLogoAMarcaExistente(marcaObjetivoLogo, file, false)
+                  }
+                  e.target.value = ''
+                }}
+                className="hidden"
+              />
+
+              {/* Formulario rápido para agregar marca + Logo opcional */}
+              <form
+                onSubmit={agregarNuevaMarca}
+                className="p-3 rounded-xl bg-slate-50/80 dark:bg-white/[0.03] border border-slate-200/80 dark:border-white/[0.08] space-y-2.5"
+              >
+                <div className="flex gap-2">
+                  <input
+                    ref={nuevoLogoInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      if (e.target.files?.[0]) {
+                        seleccionarArchivoNuevoLogo(e.target.files[0])
+                      }
+                      e.target.value = ''
+                    }}
+                    className="hidden"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => nuevoLogoInputRef.current?.click()}
+                    title="Subir logo opcional de la marca"
+                    className="h-9 px-2.5 rounded-lg bg-white dark:bg-[#1A1E29] border border-slate-200 dark:border-white/10 hover:border-amber-500 text-xs font-medium text-slate-600 dark:text-slate-300 inline-flex items-center gap-1.5 shrink-0 cursor-pointer transition"
+                  >
+                    {nuevoLogoPreview ? (
+                      <img
+                        src={nuevoLogoPreview}
+                        alt="Logo"
+                        className="h-5 w-8 object-contain"
+                      />
+                    ) : (
+                      <>
+                        <ImageIcon size={14} className="text-amber-500" />
+                        <span>Logo</span>
+                      </>
+                    )}
+                  </button>
+
+                  <input
+                    type="text"
+                    value={nuevaMarcaInput}
+                    onChange={(e) => setNuevaMarcaInput(e.target.value)}
+                    placeholder="Nueva marca (ej. Huari, Coca-Cola)..."
+                    className="flex-1 h-9 px-3 rounded-lg bg-white dark:bg-[#1A1E29] border border-slate-200 dark:border-white/10 text-xs sm:text-sm text-slate-900 dark:text-white focus:border-amber-500 focus:outline-none min-w-0"
+                  />
+
+                  <button
+                    type="submit"
+                    disabled={procesandoMarca || !nuevaMarcaInput.trim()}
+                    className="h-9 px-3.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1 shrink-0 transition cursor-pointer disabled:opacity-50"
+                  >
+                    <Plus size={15} className="stroke-[2.5]" />
+                    <span>Crear</span>
+                  </button>
+                </div>
+
+                {nuevoLogoPreview && (
+                  <div className="flex items-center justify-between gap-2 pt-1 text-[11px]">
+                    <span className="text-slate-500 dark:text-slate-400">
+                      Logo listo para guardar
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={procesandoFondoLogoNuevo}
+                        onClick={quitarFondoLogoNuevo}
+                        className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 font-bold inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        <Wand2 size={11} />
+                        <span>
+                          {procesandoFondoLogoNuevo
+                            ? 'Quitando...'
+                            : 'Quitar fondo blanco'}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNuevoLogoBlob(null)
+                          setNuevoLogoPreview('')
+                        }}
+                        className="text-slate-400 hover:text-red-500 cursor-pointer"
+                      >
+                        Quitar
+                      </button>
+                    </div>
+                  </div>
+                )}
               </form>
 
-              {/* Lista de marcas */}
-              <div className="border border-slate-200/80 dark:border-white/[0.08] rounded-xl divide-y divide-slate-100 dark:divide-white/[0.06] overflow-hidden max-h-72 overflow-y-auto">
+              {/* Lista de marcas con su Logo Oficial o botón para subirlo */}
+              <div className="border border-slate-200/80 dark:border-white/[0.08] rounded-xl divide-y divide-slate-100 dark:divide-white/[0.06] overflow-hidden max-h-80 overflow-y-auto">
                 {marcasTabla.length === 0 ? (
                   <div className="p-6 text-center text-xs text-slate-500">
                     No hay marcas registradas todavía.
@@ -1291,11 +1582,14 @@ export default function ProductosPage() {
                   marcasTabla.map((m) => {
                     const cantProds = conteoProductosPorMarca[m.nombre] || 0
                     const estaEditando = marcaEditandoId === m.id
+                    const logoActual =
+                      m.logo_url || obtenerLogoDeMarca(m.nombre, mapaLogosMarcas)
+                    const estaSubiendoEsteLogo = subiendoLogoDeMarca === m.nombre
 
                     return (
                       <div
                         key={m.id}
-                        className={`px-3.5 py-2.5 flex items-center justify-between gap-2 bg-white dark:bg-[#161922] hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition ${
+                        className={`px-3 py-2.5 flex items-center justify-between gap-2 bg-white dark:bg-[#161922] hover:bg-slate-50/80 dark:hover:bg-white/[0.03] transition ${
                           m.activo === false ? 'opacity-55' : ''
                         }`}
                       >
@@ -1336,21 +1630,112 @@ export default function ProductosPage() {
                           </div>
                         ) : (
                           <>
-                            <div className="flex items-center gap-2 min-w-0">
-                              <span className="text-xs sm:text-sm font-semibold text-slate-900 dark:text-white truncate">
-                                {m.nombre}
-                              </span>
-                              <span className="text-[11px] text-slate-400 dark:text-slate-500">
-                                ({cantProds})
-                              </span>
-                              {m.activo === false && (
-                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">
-                                  Inactiva
-                                </span>
-                              )}
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              {/* Botón / Miniatura de Logo de Marca */}
+                              <button
+                                type="button"
+                                disabled={Boolean(estaSubiendoEsteLogo)}
+                                onClick={() => {
+                                  setMarcaObjetivoLogo(m.nombre)
+                                  logoExistenteInputRef.current?.click()
+                                }}
+                                title={
+                                  logoActual
+                                    ? 'Cambiar logo de esta marca'
+                                    : 'Subir logo oficial de esta marca'
+                                }
+                                className="w-11 h-9 rounded-lg bg-slate-50 dark:bg-white/[0.05] border border-slate-200/80 dark:border-white/10 hover:border-amber-500 flex items-center justify-center shrink-0 overflow-hidden transition cursor-pointer"
+                              >
+                                {estaSubiendoEsteLogo ? (
+                                  <RefreshCw
+                                    size={13}
+                                    className="animate-spin text-amber-500"
+                                  />
+                                ) : logoActual ? (
+                                  <img
+                                    src={logoActual}
+                                    alt={m.nombre}
+                                    className="max-h-7 max-w-[36px] object-contain"
+                                  />
+                                ) : (
+                                  <ImageIcon
+                                    size={14}
+                                    className="text-slate-400 hover:text-amber-500"
+                                  />
+                                )}
+                              </button>
+
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
+                                    {m.nombre}
+                                  </span>
+                                  <span className="text-[11px] text-slate-400 dark:text-slate-500">
+                                    ({cantProds})
+                                  </span>
+                                  {m.activo === false && (
+                                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">
+                                      Inactiva
+                                    </span>
+                                  )}
+                                </div>
+                                {logoActual ? (
+                                  <div className="flex items-center gap-2 text-[10px] mt-0.5">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        recortarFondoLogoDeMarcaExistente(
+                                          m.nombre,
+                                          logoActual
+                                        )
+                                      }
+                                      className="text-amber-600 dark:text-amber-400 hover:underline font-semibold cursor-pointer"
+                                    >
+                                      Quitar fondo
+                                    </button>
+                                    <span className="text-slate-300 dark:text-slate-600">
+                                      ·
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        quitarLogoDeMarcaExistente(m.nombre)
+                                      }
+                                      className="text-slate-400 hover:text-red-500 cursor-pointer"
+                                    >
+                                      Sin logo
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setMarcaObjetivoLogo(m.nombre)
+                                      logoExistenteInputRef.current?.click()
+                                    }}
+                                    className="text-[10px] text-amber-600 dark:text-amber-400 hover:underline font-medium cursor-pointer"
+                                  >
+                                    + Subir logo
+                                  </button>
+                                )}
+                              </div>
                             </div>
 
                             <div className="flex items-center gap-1 shrink-0">
+                              {m.activo !== false && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setMarcaSeleccionada(m.nombre)
+                                    setModalMarcasAbierto(false)
+                                  }}
+                                  title="Entrar a esta marca para ver o registrar sus productos"
+                                  className="h-7 px-2 rounded-lg bg-amber-500/12 hover:bg-amber-500 text-amber-700 dark:text-amber-300 hover:text-slate-950 text-[11px] font-bold transition cursor-pointer"
+                                >
+                                  Entrar →
+                                </button>
+                              )}
+
                               <button
                                 type="button"
                                 onClick={() => {
@@ -1571,24 +1956,50 @@ export default function ProductosPage() {
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {/* Marca */}
+                    {/* Marca: Fijada automáticamente a la marca activa al crear nuevo producto */}
                     <div>
                       <div className="flex items-center justify-between mb-1">
                         <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">
                           Marca *
                         </label>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setMostrarNuevaMarcaInline((prev) => !prev)
-                          }
-                          className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
-                        >
-                          {mostrarNuevaMarcaInline ? 'Cancelar' : '+ Nueva'}
-                        </button>
+                        {productoEditando && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setMostrarNuevaMarcaInline((prev) => !prev)
+                            }
+                            className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
+                          >
+                            {mostrarNuevaMarcaInline ? 'Cancelar' : '+ Nueva'}
+                          </button>
+                        )}
                       </div>
 
-                      {mostrarNuevaMarcaInline ? (
+                      {!productoEditando ? (
+                        <div className="w-full h-9.5 px-3 rounded-lg bg-amber-500/10 border border-amber-500/35 flex items-center gap-2">
+                          {obtenerLogoDeMarca(
+                            formData.marca,
+                            mapaLogosMarcas
+                          ) ? (
+                            <img
+                              src={obtenerLogoDeMarca(
+                                formData.marca,
+                                mapaLogosMarcas
+                              )}
+                              alt={formData.marca}
+                              className="h-5 w-auto max-w-[44px] object-contain shrink-0"
+                            />
+                          ) : (
+                            <Tag
+                              size={13}
+                              className="text-amber-600 dark:text-amber-400 shrink-0"
+                            />
+                          )}
+                          <span className="text-sm font-extrabold text-slate-900 dark:text-white truncate">
+                            {formData.marca}
+                          </span>
+                        </div>
+                      ) : mostrarNuevaMarcaInline ? (
                         <div className="flex items-center gap-1">
                           <input
                             type="text"

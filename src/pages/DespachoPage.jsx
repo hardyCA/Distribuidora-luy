@@ -27,6 +27,9 @@ import {
   Wallet,
   Clock,
   ShieldCheck,
+  ArrowLeft,
+  ChevronRight,
+  Store,
 } from 'lucide-react'
 import {
   supabase,
@@ -36,6 +39,7 @@ import {
   despacharPedidosAPreventista,
   registrarCobroPreventistaEnCliente,
   confirmarRendicionDineroAlDueno,
+  cancelarPedidoPreventa,
 } from '../lib/supabase'
 import { useRole } from '../context/RoleContext'
 import { formatearStock } from '../utils/stock'
@@ -97,7 +101,7 @@ export default function DespachoPage() {
       ? etapaUrl
       : 'pendiente_alistar'
   )
-  const [preventistaSel, setPreventistaSel] = useState('')
+  const [preventistaSel, setPreventistaSel] = useState(null) // null = Nivel 1 (Tabla de Preventistas) | id = Preventista activo | 'TODOS'
   const [busquedaCliente, setBusquedaCliente] = useState('')
   const [fechaFiltro, setFechaFiltro] = useState('')
   const [paginaTiendas, setPaginaTiendas] = useState(1)
@@ -105,11 +109,13 @@ export default function DespachoPage() {
   useEffect(() => {
     if (etapaUrl && ETAPAS_DESPACHO.some((e) => e.id === etapaUrl)) {
       setEtapaFiltro(etapaUrl)
+      setPreventistaSel(null)
     }
   }, [etapaUrl])
 
   const cambiarEtapa = (nuevaEtapa) => {
     setEtapaFiltro(nuevaEtapa)
+    setPreventistaSel(null)
     if (searchParams.has('etapa')) {
       setSearchParams({}, { replace: true })
     }
@@ -142,6 +148,10 @@ export default function DespachoPage() {
   const [modalRendicionDueno, setModalRendicionDueno] = useState(null)
   const [notaRendicion, setNotaRendicion] = useState('')
   const [guardandoRendicion, setGuardandoRendicion] = useState(false)
+
+  // Modal Confirmar Cancelación de Pedido
+  const [pedidoCancelarModal, setPedidoCancelarModal] = useState(null)
+  const [cancelandoPedido, setCancelandoPedido] = useState(false)
 
   const cargarDespacho = useCallback(async () => {
     setCargando(true)
@@ -444,6 +454,8 @@ export default function DespachoPage() {
           efectivoBs: 0,
           qrBs: 0,
           creditoBs: 0,
+          paquetesaprox: 0,
+          sueltasaprox: 0,
         }
       }
       mapa[vendId].pedidos.push(ped)
@@ -451,31 +463,75 @@ export default function DespachoPage() {
       mapa[vendId].efectivoBs += Number(ped.monto_efectivo) || 0
       mapa[vendId].qrBs += Number(ped.monto_qr) || 0
       mapa[vendId].creditoBs += Number(ped.saldo_credito) || 0
+
+      ;(ped.venta_detalles || []).forEach((det) => {
+        const cant = Number(det.cantidad) || 0
+        if (
+          det.tipo_venta === 'paquete' ||
+          det.tipo_venta === 'bono_promocion'
+        ) {
+          mapa[vendId].paquetesaprox += cant
+        } else if (det.tipo_venta === 'paquete_surtido') {
+          const uPaq = Math.max(
+            1,
+            Number(det.productos?.unidades_por_paquete) || 6
+          )
+          const bot = Number(det.unidades_totales_descontar) || cant
+          mapa[vendId].paquetesaprox += Math.floor(bot / uPaq)
+          mapa[vendId].sueltasaprox += bot % uPaq
+        } else {
+          mapa[vendId].sueltasaprox +=
+            Number(det.unidades_totales_descontar) || cant
+        }
+      })
     })
 
-    return Object.values(mapa).sort(
-      (a, b) =>
-        b.pedidos.length - a.pedidos.length ||
-        a.nombre.localeCompare(b.nombre, 'es')
-    )
+    return Object.values(mapa)
+      .map((cam) => {
+        let resumenCarga = ''
+        if (cam.paquetesaprox > 0 && cam.sueltasaprox > 0) {
+          resumenCarga = `${cam.paquetesaprox} Paq + ${cam.sueltasaprox} Bot`
+        } else if (cam.paquetesaprox > 0) {
+          resumenCarga = `${cam.paquetesaprox} Paq`
+        } else if (cam.sueltasaprox > 0) {
+          resumenCarga = `${cam.sueltasaprox} Bot`
+        } else {
+          resumenCarga = '—'
+        }
+        return { ...cam, resumenCarga }
+      })
+      .sort(
+        (a, b) =>
+          b.pedidos.length - a.pedidos.length ||
+          a.nombre.localeCompare(b.nombre, 'es')
+      )
   }, [pedidos, etapaFiltro, coincideFechaFiltro, busquedaCliente, perfiles])
 
+  // Si el preventista abierto ya despachó/rindió todos sus pedidos en esta etapa, volver limpio a la tabla de preventistas
   useEffect(() => {
-    if (listaCamiones.length === 0) return
     if (
+      preventistaSel &&
       preventistaSel !== 'TODOS' &&
       !listaCamiones.some((c) => c.id === preventistaSel)
     ) {
-      setPreventistaSel(listaCamiones[0].id)
+      setPreventistaSel(null)
     }
   }, [listaCamiones, preventistaSel])
 
+  const mostrarTablaPreventistas =
+    preventistaSel === null && !busquedaCliente.trim()
+
   const camionActivo = useMemo(() => {
     if (listaCamiones.length === 0) return null
-    if (preventistaSel === 'TODOS') {
+    if (
+      preventistaSel === 'TODOS' ||
+      (preventistaSel === null && busquedaCliente.trim())
+    ) {
       return {
         id: 'TODOS',
-        nombre: 'Todos los Preventistas',
+        nombre: busquedaCliente.trim()
+          ? `Resultados para "${busquedaCliente.trim()}"`
+          : 'Todos los Preventistas',
         pedidos: listaCamiones.flatMap((c) => c.pedidos),
         totalBs: listaCamiones.reduce((acc, c) => acc + c.totalBs, 0),
         efectivoBs: listaCamiones.reduce((acc, c) => acc + c.efectivoBs, 0),
@@ -483,10 +539,9 @@ export default function DespachoPage() {
         creditoBs: listaCamiones.reduce((acc, c) => acc + c.creditoBs, 0),
       }
     }
-    return (
-      listaCamiones.find((c) => c.id === preventistaSel) || listaCamiones[0]
-    )
-  }, [listaCamiones, preventistaSel])
+    if (!preventistaSel) return null
+    return listaCamiones.find((c) => c.id === preventistaSel) || null
+  }, [listaCamiones, preventistaSel, busquedaCliente])
 
   // Consolidado de carga física solo en Etapa 1 (`pendiente_alistar`)
   const cargaCamionActivo = useMemo(() => {
@@ -565,6 +620,13 @@ export default function DespachoPage() {
                 )
               : 'Sin stock',
           stockDeposito,
+          stockDepositoTexto:
+            stockDeposito > 0
+              ? formatearCantidadesCorto(
+                  stockDeposito,
+                  item.unidades_por_paquete
+                )
+              : 'Sin stock',
           faltanteEnCentral,
           faltanteEnCentralTexto: formatearCantidadesCorto(
             faltanteEnCentral,
@@ -906,6 +968,35 @@ export default function DespachoPage() {
     }
   }
 
+  // ================= CANCELAR PEDIDO DE CLIENTE =================
+  const ejecutarCancelacionPedido = async () => {
+    if (!pedidoCancelarModal) return
+    setCancelandoPedido(true)
+    setErrorMsg('')
+    try {
+      const clienteNom =
+        pedidoCancelarModal.clientes?.nombre ||
+        pedidoCancelarModal.codigo_local ||
+        'Cliente'
+      const res = await cancelarPedidoPreventa({
+        pedido: pedidoCancelarModal,
+      })
+
+      setPedidoCancelarModal(null)
+      setMensajeExito(
+        res.stockDevuelto
+          ? `Pedido de ${clienteNom} cancelado. Las bebidas se devolvieron automáticamente al stock de Tienda Central.`
+          : `Pedido de ${clienteNom} cancelado y quitado de la lista.`
+      )
+      await cargarDespacho()
+      setTimeout(() => setMensajeExito(''), 5500)
+    } catch (err) {
+      setErrorMsg(err.message || 'No se pudo cancelar el pedido.')
+    } finally {
+      setCancelandoPedido(false)
+    }
+  }
+
   const itemsMarcadosListos = camionActivo
     ? cargaCamionActivo.filter(
         (it) => itemsAlistadosCheck[`${camionActivo.id}_${it.producto_id}`]
@@ -1044,17 +1135,17 @@ export default function DespachoPage() {
         </div>
       )}
 
-      {/* ================= 2. CONTENIDO SEGÚN ETAPA Y PREVENTISTA ================= */}
+      {/* ================= 2. CONTENIDO CERO RUIDO VISUAL: NIVEL 1 (TABLA DE PREVENTISTAS) -> NIVEL 2 (TABLAS DEL PREVENTISTA) ================= */}
       {cargando ? (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          {[1, 2, 3].map((n) => (
+        <div className="bg-white dark:bg-[#161922] rounded-2xl border border-slate-200/80 dark:border-white/[0.07] p-6 space-y-3">
+          {[1, 2, 3, 4].map((n) => (
             <div
               key={n}
-              className="bg-[#F6F5F2] dark:bg-white/[0.04] rounded-2xl h-28 animate-pulse"
+              className="bg-slate-100 dark:bg-white/[0.04] rounded-xl h-12 animate-pulse"
             />
           ))}
         </div>
-      ) : !camionActivo ? (
+      ) : listaCamiones.length === 0 ? (
         <div className="bg-white dark:bg-[#161922] rounded-2xl border border-slate-200/80 dark:border-white/[0.07] py-14 px-6 text-center space-y-2">
           <Truck className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto" />
           <div className="text-sm font-semibold text-slate-800 dark:text-slate-200">
@@ -1069,173 +1160,205 @@ export default function DespachoPage() {
           </div>
           <p className="text-xs text-slate-400 max-w-md mx-auto">
             {etapaFiltro === 'pendiente_alistar' &&
-              'Cuando un preventista registre un pedido aparecerá aquí para alistar y entregarle la carga.'}
+              'Cuando un preventista registre un pedido aparecerá su nombre en la tabla para entrar y despacharle.'}
             {etapaFiltro === 'entregado_preventista' &&
-              'Aquí aparecen los pedidos que la tienda ya entregó al preventista y que están rumbo al cliente.'}
+              'Aquí aparecen los preventistas cuya carga ya salió de tienda rumbo al cliente.'}
             {etapaFiltro === 'cobrado_preventista' &&
-              'Cuando el preventista entregue y cobre al cliente, aquí aparecerá el monto exacto para entregar al Dueño.'}
+              'Aquí aparecen los preventistas con cobros listos para entregar el dinero al Dueño.'}
             {etapaFiltro === 'rendido_dueno' &&
-              'Historial completo de entregas cuyo dinero ya fue recibido conforme por el Dueño.'}
+              'Historial de entregas cuyo dinero ya fue recibido por el Dueño.'}
           </p>
         </div>
-      ) : (
-        <div className="space-y-5">
-          {/* Selector de Preventistas / Camiones + Acciones Masivas de Etapa */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200/80 dark:border-white/[0.07] pb-3">
-            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar min-w-0">
-              {listaCamiones.map((cam) => {
-                const activo = camionActivo.id === cam.id
-                const subValor =
-                  etapaFiltro === 'cobrado_preventista'
-                    ? `Cobrado: ${formatearBs(cam.efectivoBs + cam.qrBs)}`
-                    : formatearBs(cam.totalBs)
+      ) : mostrarTablaPreventistas ? (
+        /* ================= NIVEL 1: TARJETAS LIMPIAS Y RESPONSIVAS DE PREVENTISTAS ================= */
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-0.5">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+              Selecciona un preventista ({listaCamiones.length})
+            </span>
 
-                return (
-                  <button
-                    key={cam.id}
-                    type="button"
-                    onClick={() => setPreventistaSel(cam.id)}
-                    className={`px-3.5 py-2 rounded-xl text-left flex items-center gap-2.5 transition shrink-0 cursor-pointer ${
-                      activo
-                        ? 'bg-amber-500 text-slate-950 shadow-xs'
-                        : 'bg-white dark:bg-[#161922] border border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-slate-200 hover:border-slate-300 dark:hover:border-white/15'
-                    }`}
-                  >
-                    <Truck
-                      size={16}
-                      className={
-                        activo
-                          ? 'text-slate-950 shrink-0'
-                          : 'text-amber-500 shrink-0'
-                      }
-                    />
-                    <div className="leading-tight">
-                      <div className="text-xs font-bold whitespace-nowrap">
-                        {cam.nombre}
-                      </div>
-                      <div
-                        className={`text-[11px] tabular-nums whitespace-nowrap ${
-                          activo
-                            ? 'text-slate-900/80 font-semibold'
-                            : 'text-slate-400'
-                        }`}
-                      >
-                        {cam.pedidos.length}{' '}
-                        {cam.pedidos.length === 1 ? 'pedido' : 'pedidos'} ·{' '}
-                        {subValor}
-                      </div>
-                    </div>
-                  </button>
-                )
-              })}
-
-              {listaCamiones.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => setPreventistaSel('TODOS')}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition shrink-0 cursor-pointer ${
-                    camionActivo.id === 'TODOS'
-                      ? 'bg-amber-500 text-slate-950'
-                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/5'
-                  }`}
-                >
-                  Ver todos ({listaCamiones.length})
-                </button>
-              )}
-            </div>
-
-            {/* Botones de Etapa 1 (Hoja de Carga + Entregar Todo al Preventista) */}
-            {etapaFiltro === 'pendiente_alistar' && (
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() =>
-                    generarPDFHojaCargaCamion({
-                      preventistaNombre: camionActivo.nombre,
-                      itemsCarga: cargaCamionActivo.map((it) => ({
-                        ...it,
-                        nombre: it.nombreCompleto,
-                      })),
-                      pedidosTienda: camionActivo.pedidos,
-                      totalBs: camionActivo.totalBs,
-                    })
-                  }
-                  className="h-9 px-3.5 rounded-xl bg-white dark:bg-[#161922] hover:bg-slate-50 dark:hover:bg-white/[0.06] border border-slate-200/80 dark:border-white/[0.09] text-slate-700 dark:text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5 transition cursor-pointer"
-                >
-                  <Printer size={14} className="text-amber-500" />
-                  <span>Hoja de Carga PDF</span>
-                </button>
-
-                <button
-                  type="button"
-                  disabled={
-                    despachandoId !== null || hayFaltanteEnCentralCamion
-                  }
-                  title={
-                    hayFaltanteEnCentralCamion
-                      ? 'Primero traspasa el stock faltante a Tienda Central'
-                      : 'Marcar todos los pedidos como entregados al preventista y descontar stock'
-                  }
-                  onClick={() =>
-                    setModalDespachoCamion({
-                      nombre: camionActivo.nombre,
-                      pedidos: camionActivo.pedidos,
-                      totalBs: camionActivo.totalBs,
-                    })
-                  }
-                  className="h-9 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold inline-flex items-center gap-1.5 shadow-xs transition cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
-                >
-                  <PackageCheck size={15} className="stroke-[2.4]" />
-                  <span>
-                    Entregar Carga ({camionActivo.pedidos.length}) a Preventista
-                  </span>
-                </button>
-              </div>
-            )}
-
-            {/* Botón PDF en Etapa 4 (Finalizados) */}
-            {etapaFiltro === 'rendido_dueno' && (
+            {listaCamiones.length > 1 && (
               <button
                 type="button"
-                onClick={() =>
-                  generarPDFRendicionPreventista({
-                    preventistaNombre: camionActivo.nombre,
-                    pedidos: camionActivo.pedidos,
-                    recibidoPor:
-                      camionActivo.pedidos[0]?.info_custodia
-                        ?.recibido_por_nombre || 'Dueño / Admin',
-                    yaRendido: true,
-                  })
-                }
-                className="h-9 px-3.5 rounded-xl bg-white dark:bg-[#161922] hover:bg-slate-50 dark:hover:bg-white/[0.06] border border-slate-200/80 dark:border-white/[0.09] text-slate-700 dark:text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5 transition shrink-0 cursor-pointer"
+                onClick={() => setPreventistaSel('TODOS')}
+                className="text-xs font-semibold text-slate-500 hover:text-amber-600 dark:text-slate-400 dark:hover:text-amber-400 transition cursor-pointer"
               >
-                <Printer size={14} className="text-emerald-500" />
-                <span>Imprimir Acta de Rendición PDF</span>
+                Ver todos los clientes juntos →
               </button>
             )}
           </div>
 
-          {/* ================= PANEL ESPECIAL ETAPA 3: RENDICIÓN DE DINERO AL DUEÑO ================= */}
-          {etapaFiltro === 'cobrado_preventista' && (
-            <section className="rounded-2xl bg-white dark:bg-[#161922] border border-emerald-500/35 dark:border-emerald-500/30 p-4 sm:p-5 space-y-4 shadow-2xs">
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-                <div className="space-y-0.5">
-                  <div className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-400">
-                    <Wallet size={14} />
-                    <span>
-                      Paso Final · Entrega de Dinero del Preventista al Dueño
-                    </span>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3.5">
+            {listaCamiones.map((cam) => (
+              <button
+                key={cam.id}
+                type="button"
+                onClick={() => setPreventistaSel(cam.id)}
+                className="group text-left rounded-2xl bg-white dark:bg-[#161922] border border-slate-200/85 dark:border-white/[0.08] hover:border-amber-500/60 dark:hover:border-amber-500/50 shadow-2xs hover:shadow-md p-4 sm:p-5 flex flex-col justify-between gap-3.5 transition cursor-pointer"
+              >
+                {/* Cabecera del Card: Iniciales + Nombre + Cantidad de clientes */}
+                <div className="flex items-start justify-between gap-2.5">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/25 text-amber-600 dark:text-amber-400 font-extrabold text-xs flex items-center justify-center shrink-0">
+                      {cam.nombre.slice(0, 2).toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm sm:text-[15px] font-extrabold text-slate-900 dark:text-white group-hover:text-amber-600 dark:group-hover:text-amber-400 transition-colors leading-snug break-words">
+                        {cam.nombre}
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-0.5">
+                        Preventista en ruta
+                      </div>
+                    </div>
                   </div>
-                  <h2 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
-                    Rendición de {camionActivo.nombre} ({camionActivo.pedidos.length}{' '}
-                    {camionActivo.pedidos.length === 1
-                      ? 'pedido cobrado'
-                      : 'pedidos cobrados'}
-                    )
-                  </h2>
+
+                  <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-white/[0.07] text-slate-800 dark:text-slate-200 font-bold text-[11px] shrink-0 tabular-nums">
+                    {cam.pedidos.length}{' '}
+                    {cam.pedidos.length === 1 ? 'cliente' : 'clientes'}
+                  </span>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
+                {/* Recuadro de Métricas: Carga / Efectivo + Monto Total */}
+                <div className="grid grid-cols-2 gap-2.5 p-3 rounded-xl bg-slate-50/90 dark:bg-[#11141B] border border-slate-200/70 dark:border-white/[0.06] tabular-nums">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      {etapaFiltro === 'cobrado_preventista'
+                        ? 'Efectivo / QR'
+                        : 'Carga Total'}
+                    </div>
+                    <div className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-200 mt-0.5 truncate">
+                      {etapaFiltro === 'cobrado_preventista' ? (
+                        <span>
+                          Efec:{' '}
+                          <strong className="text-amber-600 dark:text-amber-400">
+                            {formatearBs(cam.efectivoBs)}
+                          </strong>
+                        </span>
+                      ) : (
+                        cam.resumenCarga
+                      )}
+                    </div>
+                    {etapaFiltro === 'cobrado_preventista' && (
+                      <div className="text-[10px] text-slate-400">
+                        QR: {formatearBs(cam.qrBs)}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="text-right">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      {etapaFiltro === 'cobrado_preventista'
+                        ? 'Total a Rendir'
+                        : 'Monto Total'}
+                    </div>
+                    <div
+                      className={`text-sm sm:text-base font-black mt-0.5 ${
+                        etapaFiltro === 'cobrado_preventista'
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-amber-600 dark:text-amber-400'
+                      }`}
+                    >
+                      {etapaFiltro === 'cobrado_preventista'
+                        ? formatearBs(cam.efectivoBs + cam.qrBs)
+                        : formatearBs(cam.totalBs)}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Botón inferior claro */}
+                <div className="w-full h-9 px-3.5 rounded-xl bg-amber-500 group-hover:bg-amber-400 text-slate-950 text-xs font-extrabold flex items-center justify-between transition">
+                  <span>Ver pedidos ({cam.pedidos.length})</span>
+                  <ChevronRight size={15} className="stroke-[2.5]" />
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : camionActivo ? (
+        /* ================= NIVEL 2: DENTRO DEL PREVENTISTA (BARRA VOLVER + SECCIONES RESPONSIVAS) ================= */
+        <div className="space-y-4">
+          {/* Barra Superior Limpia y Responsiva con Botón `← Preventistas` + Acciones Globales */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 sm:px-4 rounded-2xl bg-white dark:bg-[#161922] border border-slate-200/85 dark:border-white/[0.08]">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setPreventistaSel(null)
+                  setBusquedaCliente('')
+                }}
+                className="h-9 px-3 rounded-xl bg-slate-100 hover:bg-slate-200/80 dark:bg-white/[0.07] dark:hover:bg-white/[0.13] text-slate-800 dark:text-white text-xs font-bold inline-flex items-center gap-1.5 transition cursor-pointer shrink-0"
+              >
+                <ArrowLeft size={15} className="text-amber-500 stroke-[2.5]" />
+                <span>Preventistas</span>
+              </button>
+
+              <div className="min-w-0">
+                <h2 className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white truncate">
+                  {camionActivo.nombre}
+                </h2>
+                <div className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+                  {camionActivo.pedidos.length}{' '}
+                  {camionActivo.pedidos.length === 1 ? 'cliente' : 'clientes'} · Total{' '}
+                  <strong className="text-slate-800 dark:text-slate-200">
+                    {formatearBs(camionActivo.totalBs)}
+                  </strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto sm:ml-auto">
+              {/* Acciones Etapa 1: Hoja de Carga + Entregar Toda la Carga */}
+              {etapaFiltro === 'pendiente_alistar' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      generarPDFHojaCargaCamion({
+                        preventistaNombre: camionActivo.nombre,
+                        itemsCarga: cargaCamionActivo.map((it) => ({
+                          ...it,
+                          nombre: it.nombreCompleto,
+                        })),
+                        pedidosTienda: camionActivo.pedidos,
+                        totalBs: camionActivo.totalBs,
+                      })
+                    }
+                    className="h-9 px-3 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200/70 dark:hover:bg-white/[0.12] text-slate-700 dark:text-slate-200 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition cursor-pointer flex-1 sm:flex-initial"
+                  >
+                    <Printer size={14} className="text-amber-500" />
+                    <span>Hoja PDF</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={
+                      despachandoId !== null || hayFaltanteEnCentralCamion
+                    }
+                    title={
+                      hayFaltanteEnCentralCamion
+                        ? 'Primero traspasa el stock faltante a Tienda Central'
+                        : 'Entregar toda la carga al preventista'
+                    }
+                    onClick={() =>
+                      setModalDespachoCamion({
+                        nombre: camionActivo.nombre,
+                        pedidos: camionActivo.pedidos,
+                        totalBs: camionActivo.totalBs,
+                      })
+                    }
+                    className="h-9 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold inline-flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed flex-1 sm:flex-initial"
+                  >
+                    <PackageCheck size={15} className="stroke-[2.4]" />
+                    <span>
+                      Entregar Todo ({camionActivo.pedidos.length})
+                    </span>
+                  </button>
+                </>
+              )}
+
+              {/* Acciones Etapa 3: Rendición al Dueño */}
+              {etapaFiltro === 'cobrado_preventista' && (
+                <>
                   <button
                     type="button"
                     onClick={() =>
@@ -1246,13 +1369,13 @@ export default function DespachoPage() {
                         yaRendido: false,
                       })
                     }
-                    className="h-9 px-3.5 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200/70 dark:hover:bg-white/[0.1] text-slate-800 dark:text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5 transition cursor-pointer"
+                    className="h-9 px-3 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200/70 dark:hover:bg-white/[0.12] text-slate-800 dark:text-slate-200 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition cursor-pointer flex-1 sm:flex-initial"
                   >
                     <Printer size={14} className="text-amber-500" />
-                    <span>Hoja de Rendición PDF</span>
+                    <span>Hoja PDF</span>
                   </button>
 
-                  {esAdmin ? (
+                  {esAdmin && (
                     <button
                       type="button"
                       onClick={() =>
@@ -1261,210 +1384,398 @@ export default function DespachoPage() {
                           camionActivo.nombre
                         )
                       }
-                      className="h-9 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold inline-flex items-center gap-1.5 shadow-xs transition cursor-pointer"
+                      className="h-9 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold inline-flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer flex-1 sm:flex-initial"
                     >
                       <ShieldCheck size={15} />
                       <span>
-                        Confirmar Recepción de Dinero (
+                        Recibir Todo (
                         {formatearBs(
                           camionActivo.efectivoBs + camionActivo.qrBs
                         )}
                         )
                       </span>
                     </button>
-                  ) : (
-                    <span className="h-9 px-3.5 rounded-xl bg-amber-500/12 border border-amber-500/30 text-amber-800 dark:text-amber-300 text-xs font-semibold inline-flex items-center gap-1.5">
-                      <Clock size={14} />
-                      <span>Pendiente que el Dueño reciba el dinero</span>
-                    </span>
                   )}
+                </>
+              )}
+
+              {/* Acciones Etapa 4: Acta PDF */}
+              {etapaFiltro === 'rendido_dueno' && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    generarPDFRendicionPreventista({
+                      preventistaNombre: camionActivo.nombre,
+                      pedidos: camionActivo.pedidos,
+                      recibidoPor:
+                        camionActivo.pedidos[0]?.info_custodia
+                          ?.recibido_por_nombre || 'Dueño / Admin',
+                      yaRendido: true,
+                    })
+                  }
+                  className="h-9 px-3.5 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200/70 dark:hover:bg-white/[0.12] text-slate-700 dark:text-slate-200 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition cursor-pointer w-full sm:w-auto"
+                >
+                  <Printer size={14} className="text-emerald-500" />
+                  <span>Acta PDF</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Barra resumen compacta de arqueo en Etapa 3 */}
+          {etapaFiltro === 'cobrado_preventista' && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 tabular-nums">
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                  Efectivo en Mano
+                </div>
+                <div className="text-base sm:text-lg font-black text-slate-900 dark:text-amber-400 mt-0.5">
+                  {formatearBs(camionActivo.efectivoBs)}
                 </div>
               </div>
-
-              {/* 4 Cajas Claras de Arqueo del Preventista */}
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 tabular-nums">
-                <div className="p-3.5 rounded-xl bg-amber-50/90 dark:bg-amber-500/10 border border-amber-300/70 dark:border-amber-500/30">
-                  <div className="text-[11px] font-bold uppercase tracking-wider text-amber-800 dark:text-amber-300 flex items-center gap-1.5">
-                    <Banknote size={13} />
-                    <span>Efectivo a Recibir en Mano</span>
-                  </div>
-                  <div className="text-lg sm:text-xl font-black text-slate-900 dark:text-amber-400 mt-1">
-                    {formatearBs(camionActivo.efectivoBs)}
-                  </div>
+              <div className="p-3 rounded-xl bg-white dark:bg-[#161922] border border-slate-200/80 dark:border-white/[0.07]">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  Cobrado QR
                 </div>
-
-                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200/80 dark:border-white/[0.07]">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
-                    <QrCode size={13} className="text-sky-500" />
-                    <span>Cobrado por QR (Banco)</span>
-                  </div>
-                  <div className="text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white mt-1">
-                    {formatearBs(camionActivo.qrBs)}
-                  </div>
-                </div>
-
-                <div className="p-3.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/25">
-                  <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
-                    Total Recaudado (Efec + QR)
-                  </div>
-                  <div className="text-lg sm:text-xl font-black text-emerald-700 dark:text-emerald-400 mt-1">
-                    {formatearBs(camionActivo.efectivoBs + camionActivo.qrBs)}
-                  </div>
-                </div>
-
-                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200/80 dark:border-white/[0.07]">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
-                    <CreditCard size={13} className="text-amber-500" />
-                    <span>Dejado a Crédito en Tiendas</span>
-                  </div>
-                  <div className="text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white mt-1">
-                    {formatearBs(camionActivo.creditoBs)}
-                  </div>
+                <div className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white mt-0.5">
+                  {formatearBs(camionActivo.qrBs)}
                 </div>
               </div>
-            </section>
+              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+                  Total a Entregar al Dueño
+                </div>
+                <div className="text-base sm:text-lg font-black text-emerald-700 dark:text-emerald-400 mt-0.5">
+                  {formatearBs(camionActivo.efectivoBs + camionActivo.qrBs)}
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-white dark:bg-[#161922] border border-slate-200/80 dark:border-white/[0.07]">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  Crédito en Tiendas
+                </div>
+                <div className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white mt-0.5">
+                  {formatearBs(camionActivo.creditoBs)}
+                </div>
+              </div>
+            </div>
           )}
 
-          {/* ================= 3. CARGA FÍSICA DEL CAMIÓN (ETAPA 1) ================= */}
+          {/* ================= SECCIÓN 1 (SOLO ETAPA 1): CARGA A SEPARAR RESPONSIVA CON STOCK ALMACÉN + STOCK CENTRAL ================= */}
           {etapaFiltro === 'pendiente_alistar' &&
             cargaCamionActivo.length > 0 && (
-              <section className="space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
-                    Carga a entregar al preventista ({itemsMarcadosListos}/
-                    {cargaCamionActivo.length} separadas)
-                  </h2>
+              <section className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 px-0.5">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                    1. Bebidas a separar en almacén/tienda ({itemsMarcadosListos}/
+                    {cargaCamionActivo.length} listas)
+                  </h3>
                   {hayFaltanteEnCentralCamion && (
                     <span className="text-xs font-semibold text-amber-600 dark:text-amber-400">
-                      Traspasa primero los faltantes a Tienda Central para habilitar la entrega del camión completo
+                      Traspasa los faltantes marcados abajo antes de entregar todo
                     </span>
                   )}
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3.5">
-                  {cargaCamionActivo.map((item) => {
-                    const keyCheck = `${camionActivo.id}_${item.producto_id}`
-                    const listo = Boolean(itemsAlistadosCheck[keyCheck])
-                    const sinStockTotal = item.faltanteTotalEmpresa > 0
-                    const requiereTraspaso =
-                      !sinStockTotal && item.alcanzaConDeposito
+                <div className="bg-white dark:bg-[#161922] rounded-2xl border border-slate-200/85 dark:border-white/[0.08] overflow-hidden">
+                  {/* VISTA ESCRITORIO / TABLET (md+): Tabla completa con Stock Almacén y Stock Central */}
+                  <div className="hidden md:block overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-200/80 dark:border-white/[0.08] text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-50/70 dark:bg-[#11141B]/70">
+                          <th className="py-2.5 pl-4 pr-2 w-10 text-center">✓</th>
+                          <th className="py-2.5 px-3">Bebida</th>
+                          <th className="py-2.5 px-3">Cantidad a Cargar</th>
+                          <th className="py-2.5 px-3">Stock en Almacén</th>
+                          <th className="py-2.5 px-3">Stock en Central</th>
+                          <th className="py-2.5 pl-3 pr-4 text-right">Estado</th>
+                        </tr>
+                      </thead>
 
-                    return (
-                      <div
-                        key={item.producto_id}
-                        onClick={() =>
-                          toggleChecklistAlistado(item.producto_id)
-                        }
-                        className={`group relative rounded-2xl p-4 flex items-center gap-3.5 transition cursor-pointer select-none border ${
-                          listo
-                            ? 'bg-emerald-50/70 dark:bg-emerald-500/10 border-emerald-500/40 opacity-80'
-                            : 'bg-white dark:bg-[#161922] border-slate-200/80 dark:border-white/[0.07] hover:border-slate-300 dark:hover:border-white/15'
-                        }`}
-                      >
-                        <div className="w-14 h-18 rounded-xl bg-[#F6F5F2] dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.06] shrink-0 overflow-hidden flex items-center justify-center">
-                          <BottleVisual
-                            imagenUrl={item.imagen_url}
-                            nombre={item.nombre}
-                            alturaClass="h-15"
-                          />
-                        </div>
+                      <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06] text-xs lg:text-sm tabular-nums">
+                        {cargaCamionActivo.map((item) => {
+                          const keyCheck = `${camionActivo.id}_${item.producto_id}`
+                          const listo = Boolean(itemsAlistadosCheck[keyCheck])
+                          const sinStockTotal = item.faltanteTotalEmpresa > 0
+                          const requiereTraspaso =
+                            !sinStockTotal && item.alcanzaConDeposito
 
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-start justify-between gap-2">
-                            <span
-                              className={`text-base sm:text-lg font-extrabold tabular-nums leading-tight ${
+                          return (
+                            <tr
+                              key={item.producto_id}
+                              onClick={() =>
+                                toggleChecklistAlistado(item.producto_id)
+                              }
+                              className={`transition cursor-pointer select-none ${
                                 listo
-                                  ? 'text-emerald-700 dark:text-emerald-400 line-through'
-                                  : 'text-slate-900 dark:text-amber-400'
+                                  ? 'bg-emerald-500/[0.07]'
+                                  : 'hover:bg-slate-50/80 dark:hover:bg-white/[0.03]'
                               }`}
                             >
-                              {item.cantidadTexto}
-                            </span>
-
-                            <span
-                              className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 transition ${
-                                listo
-                                  ? 'bg-emerald-500 text-white'
-                                  : 'border border-slate-300 dark:border-white/15 bg-slate-50 dark:bg-white/[0.04] text-transparent group-hover:border-amber-500'
-                              }`}
-                            >
-                              <Check size={12} className="stroke-[3]" />
-                            </span>
-                          </div>
-
-                          <div className="text-xs sm:text-sm font-semibold text-slate-900 dark:text-white leading-snug line-clamp-2 mt-0.5">
-                            {item.nombreCompleto}
-                          </div>
-
-                          <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1.5 text-[11px] tabular-nums">
-                            {requiereTraspaso ? (
-                              <div className="flex flex-wrap items-center gap-1.5">
-                                <span className="text-slate-400">
-                                  Central: {item.stockCentralTexto} ·
+                              <td className="py-2.5 pl-4 pr-2 text-center">
+                                <span
+                                  className={`w-5 h-5 rounded-md inline-flex items-center justify-center transition ${
+                                    listo
+                                      ? 'bg-emerald-500 text-white'
+                                      : 'border border-slate-300 dark:border-white/20 bg-slate-50 dark:bg-white/[0.04] text-transparent'
+                                  }`}
+                                >
+                                  <Check size={12} className="stroke-[3]" />
                                 </span>
-                                <span className="text-amber-600 dark:text-amber-400 font-semibold">
-                                  Traer {item.faltanteEnCentralTexto} de Depósito
-                                </span>
-                                {puedeTraspasar && (
-                                  <button
-                                    type="button"
-                                    disabled={
-                                      traspasandoProdId === item.producto_id
-                                    }
-                                    onClick={(e) =>
-                                      traspasarFaltanteDesdeDeposito(e, item)
-                                    }
-                                    className="px-2 py-0.5 rounded-md bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-bold inline-flex items-center gap-1 transition cursor-pointer disabled:opacity-50"
-                                  >
-                                    <ArrowRightLeft size={10} />
-                                    <span>
-                                      {traspasandoProdId === item.producto_id
-                                        ? 'Pasando...'
-                                        : 'Traspasar'}
+                              </td>
+
+                              <td className="py-2.5 px-3">
+                                <div
+                                  className={`font-bold ${
+                                    listo
+                                      ? 'line-through text-slate-400'
+                                      : 'text-slate-900 dark:text-white'
+                                  }`}
+                                >
+                                  {item.nombreCompleto}
+                                </div>
+                                <div className="text-[11px] text-slate-400">
+                                  {item.marca} · Pack x{item.unidades_por_paquete}
+                                  {item.botellas_bono > 0 && (
+                                    <span className="text-amber-600 dark:text-amber-400 font-semibold ml-1.5">
+                                      (+
+                                      {formatearCantidadesCorto(
+                                        item.botellas_bono,
+                                        item.unidades_por_paquete
+                                      )}{' '}
+                                      gratis)
                                     </span>
-                                  </button>
-                                )}
-                              </div>
-                            ) : sinStockTotal ? (
-                              <span className="text-red-500 dark:text-red-400 font-semibold">
-                                Central: {item.stockCentralTexto} · Faltan{' '}
-                                {item.faltanteTotalTexto}
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                                <span>
-                                  En Central: {item.stockCentralTexto} (Pack x
-                                  {item.unidades_por_paquete})
-                                </span>
-                              </span>
-                            )}
+                                  )}
+                                </div>
+                              </td>
 
-                            {item.botellas_bono > 0 && (
-                              <span className="text-amber-600 dark:text-amber-400 font-semibold">
-                                +{formatearCantidadesCorto(
-                                  item.botellas_bono,
-                                  item.unidades_por_paquete
-                                )}{' '}
-                                gratis
+                              <td className="py-2.5 px-3 font-black text-amber-600 dark:text-amber-400 whitespace-nowrap">
+                                {item.cantidadTexto}
+                              </td>
+
+                              <td
+                                className={`py-2.5 px-3 font-semibold whitespace-nowrap ${
+                                  item.stockDeposito > 0
+                                    ? 'text-sky-600 dark:text-sky-400'
+                                    : 'text-slate-400 dark:text-slate-500'
+                                }`}
+                              >
+                                {item.stockDepositoTexto}
+                              </td>
+
+                              <td
+                                className={`py-2.5 px-3 font-semibold whitespace-nowrap ${
+                                  item.stockCentral >= item.total_botellas
+                                    ? 'text-slate-700 dark:text-slate-200'
+                                    : item.stockCentral > 0
+                                    ? 'text-amber-600 dark:text-amber-400'
+                                    : 'text-slate-400 dark:text-slate-500'
+                                }`}
+                              >
+                                {item.stockCentralTexto}
+                              </td>
+
+                              <td className="py-2.5 pl-3 pr-4 text-right whitespace-nowrap">
+                                {requiereTraspaso ? (
+                                  <div className="inline-flex items-center gap-1.5">
+                                    <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hidden lg:inline">
+                                      Faltan {item.faltanteEnCentralTexto}
+                                    </span>
+                                    {puedeTraspasar ? (
+                                      <button
+                                        type="button"
+                                        disabled={
+                                          traspasandoProdId === item.producto_id
+                                        }
+                                        onClick={(e) =>
+                                          traspasarFaltanteDesdeDeposito(e, item)
+                                        }
+                                        className="h-7 px-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[11px] font-extrabold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                      >
+                                        <ArrowRightLeft size={11} />
+                                        <span>
+                                          {traspasandoProdId === item.producto_id
+                                            ? 'Pasando...'
+                                            : `Traspasar ${item.faltanteEnCentralTexto}`}
+                                        </span>
+                                      </button>
+                                    ) : (
+                                      <span className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                                        Pedir traspaso
+                                      </span>
+                                    )}
+                                  </div>
+                                ) : sinStockTotal ? (
+                                  <span className="text-[11px] font-bold text-red-500 dark:text-red-400">
+                                    Faltan {item.faltanteTotalTexto}
+                                  </span>
+                                ) : (
+                                  <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                                    Disponible
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* VISTA MÓVIL (< md): Tarjetas compactas apiladas 100% legibles sin scroll horizontal */}
+                  <div className="md:hidden divide-y divide-slate-100 dark:divide-white/[0.06] tabular-nums">
+                    {cargaCamionActivo.map((item) => {
+                      const keyCheck = `${camionActivo.id}_${item.producto_id}`
+                      const listo = Boolean(itemsAlistadosCheck[keyCheck])
+                      const sinStockTotal = item.faltanteTotalEmpresa > 0
+                      const requiereTraspaso =
+                        !sinStockTotal && item.alcanzaConDeposito
+
+                      return (
+                        <div
+                          key={item.producto_id}
+                          onClick={() =>
+                            toggleChecklistAlistado(item.producto_id)
+                          }
+                          className={`p-3.5 space-y-2.5 transition cursor-pointer select-none ${
+                            listo ? 'bg-emerald-500/[0.07]' : ''
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2.5">
+                            <div className="flex items-start gap-2.5 min-w-0">
+                              <span
+                                className={`w-5 h-5 mt-0.5 rounded-md inline-flex items-center justify-center shrink-0 transition ${
+                                  listo
+                                    ? 'bg-emerald-500 text-white'
+                                    : 'border border-slate-300 dark:border-white/20 bg-slate-50 dark:bg-white/[0.04] text-transparent'
+                                }`}
+                              >
+                                <Check size={12} className="stroke-[3]" />
                               </span>
-                            )}
+                              <div className="min-w-0">
+                                <div
+                                  className={`text-xs font-bold leading-snug ${
+                                    listo
+                                      ? 'line-through text-slate-400'
+                                      : 'text-slate-900 dark:text-white'
+                                  }`}
+                                >
+                                  {item.nombreCompleto}
+                                </div>
+                                <div className="text-[11px] text-slate-400">
+                                  {item.marca} · Pack x{item.unidades_por_paquete}
+                                  {item.botellas_bono > 0 && (
+                                    <span className="text-amber-600 dark:text-amber-400 font-semibold ml-1">
+                                      (+
+                                      {formatearCantidadesCorto(
+                                        item.botellas_bono,
+                                        item.unidades_por_paquete
+                                      )}{' '}
+                                      gratis)
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="shrink-0">
+                              {requiereTraspaso ? (
+                                <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[10px] font-extrabold">
+                                  Faltan {item.faltanteEnCentralTexto}
+                                </span>
+                              ) : sinStockTotal ? (
+                                <span className="px-2 py-0.5 rounded-md bg-red-500/15 text-red-500 dark:text-red-400 text-[10px] font-extrabold">
+                                  Faltan {item.faltanteTotalTexto}
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[10px] font-extrabold">
+                                  Disponible
+                                </span>
+                              )}
+                            </div>
                           </div>
+
+                          {/* 3 columnas móviles: A Cargar | Stock Almacén | Stock Central */}
+                          <div className="grid grid-cols-3 gap-1.5 p-2.5 rounded-xl bg-slate-50/90 dark:bg-[#11141B] border border-slate-200/70 dark:border-white/[0.06] text-[11px]">
+                            <div>
+                              <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+                                A Cargar
+                              </div>
+                              <div className="font-black text-amber-600 dark:text-amber-400 mt-0.5">
+                                {item.cantidadTexto}
+                              </div>
+                            </div>
+
+                            <div>
+                              <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+                                Almacén
+                              </div>
+                              <div
+                                className={`font-bold mt-0.5 ${
+                                  item.stockDeposito > 0
+                                    ? 'text-sky-600 dark:text-sky-400'
+                                    : 'text-slate-400 dark:text-slate-500'
+                                }`}
+                              >
+                                {item.stockDepositoTexto}
+                              </div>
+                            </div>
+
+                            <div>
+                              <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+                                Central
+                              </div>
+                              <div
+                                className={`font-bold mt-0.5 ${
+                                  item.stockCentral >= item.total_botellas
+                                    ? 'text-slate-800 dark:text-slate-200'
+                                    : item.stockCentral > 0
+                                    ? 'text-amber-600 dark:text-amber-400'
+                                    : 'text-slate-400 dark:text-slate-500'
+                                }`}
+                              >
+                                {item.stockCentralTexto}
+                              </div>
+                            </div>
+                          </div>
+
+                          {requiereTraspaso && puedeTraspasar && (
+                            <button
+                              type="button"
+                              disabled={
+                                traspasandoProdId === item.producto_id
+                              }
+                              onClick={(e) =>
+                                traspasarFaltanteDesdeDeposito(e, item)
+                              }
+                              className="w-full h-8 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                            >
+                              <ArrowRightLeft size={12} />
+                              <span>
+                                {traspasandoProdId === item.producto_id
+                                  ? 'Pasando a Central...'
+                                  : `Traspasar ${item.faltanteEnCentralTexto} de Almacén a Central`}
+                              </span>
+                            </button>
+                          )}
                         </div>
-                      </div>
-                    )
-                  })}
+                      )
+                    })}
+                  </div>
                 </div>
               </section>
             )}
 
-          {/* ================= 4. TARJETAS DE TIENDAS / CLIENTES ================= */}
+          {/* ================= SECCIÓN 2: TARJETAS LIMPIAS Y BONITAS POR CADA PEDIDO DE CLIENTE ================= */}
           <section className="space-y-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
-              Pedidos por tienda ({camionActivo.pedidos.length})
-            </h2>
+            <div className="flex items-center justify-between gap-2 px-0.5">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                {etapaFiltro === 'pendiente_alistar'
+                  ? `2. Pedidos por cliente de ${camionActivo.nombre} (${camionActivo.pedidos.length})`
+                  : `Pedidos por cliente (${camionActivo.pedidos.length})`}
+              </h3>
+            </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
               {camionActivo.pedidos
                 .slice(
                   (paginaTiendas - 1) * TAMANO_PAGINA_TIENDAS,
@@ -1472,96 +1783,104 @@ export default function DespachoPage() {
                 )
                 .map((ped) => {
                   const etapa = ped.etapa_ruta || 'pendiente_alistar'
-                  const clienteObj = ped.clientes || { nombre: 'Tienda' }
+                  const clienteObj = ped.clientes || { nombre: 'Cliente' }
                   const preventistaNombre =
                     ped.perfiles?.nombre || 'Preventista'
                   const detallesOriginales = ped.venta_detalles || []
                   const lineasAgrupadas =
                     agruparLineasTienda(detallesOriginales)
                   const custodia = ped.info_custodia || {}
+                  const puedeCancelar =
+                    etapa !== 'rendido_dueno' || esAdmin
 
                   return (
                     <article
                       key={ped.id}
-                      className="bg-white dark:bg-[#161922] rounded-2xl border border-slate-200/80 dark:border-white/[0.07] flex flex-col justify-between transition hover:border-slate-300 dark:hover:border-white/[0.14]"
+                      className="rounded-2xl bg-white dark:bg-[#161922] border border-slate-200/85 dark:border-white/[0.08] hover:border-amber-500/35 dark:hover:border-white/[0.15] shadow-2xs p-4 flex flex-col justify-between gap-3.5 transition"
                     >
-                      <div className="p-4 sm:p-5 space-y-3.5">
-                        {/* Cabecera Tienda + Estado Exacto */}
+                      <div className="space-y-3">
+                        {/* Cabecera de la tarjeta: Cliente + Total */}
                         <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0 space-y-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <h3 className="text-base font-bold text-slate-900 dark:text-white truncate">
-                                {clienteObj.nombre}
-                              </h3>
-                              <span className="text-[11px] font-mono font-semibold text-slate-400">
-                                {ped.codigo_local}
-                              </span>
-                              {camionActivo.id === 'TODOS' && (
-                                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-white/[0.07] text-slate-700 dark:text-slate-300 shrink-0">
-                                  {preventistaNombre}
-                                </span>
-                              )}
+                          <div className="flex items-start gap-2.5 min-w-0">
+                            <div className="w-9 h-9 rounded-xl bg-amber-500/12 border border-amber-500/25 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0 mt-0.5">
+                              <Store size={16} />
                             </div>
 
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-400">
-                              {clienteObj.direccion && (
-                                <span className="inline-flex items-center gap-1 truncate">
-                                  <MapPin size={12} className="shrink-0" />
-                                  <span className="truncate">
-                                    {clienteObj.direccion}
+                            <div className="min-w-0">
+                              <h4 className="text-sm sm:text-[15px] font-extrabold text-slate-900 dark:text-white leading-snug truncate">
+                                {clienteObj.nombre}
+                              </h4>
+
+                              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                                {clienteObj.direccion && (
+                                  <span className="inline-flex items-center gap-1 truncate max-w-[220px]">
+                                    <MapPin
+                                      size={11}
+                                      className="text-slate-400 shrink-0"
+                                    />
+                                    <span className="truncate">
+                                      {clienteObj.direccion}
+                                    </span>
                                   </span>
-                                </span>
-                              )}
-                              {clienteObj.telefono && (
-                                <span className="inline-flex items-center gap-1 tabular-nums">
-                                  <Phone size={12} className="shrink-0" />
-                                  <span>{clienteObj.telefono}</span>
+                                )}
+
+                                {clienteObj.telefono && (
+                                  <span className="inline-flex items-center gap-1 tabular-nums">
+                                    <Phone
+                                      size={10}
+                                      className="text-slate-400 shrink-0"
+                                    />
+                                    <span>{clienteObj.telefono}</span>
+                                  </span>
+                                )}
+
+                                {ped.fecha_pedido && (
+                                  <span className="text-slate-400 dark:text-slate-500 tabular-nums">
+                                    {formatearFechaCorta(ped.fecha_pedido)}
+                                  </span>
+                                )}
+                              </div>
+
+                              {camionActivo.id === 'TODOS' && (
+                                <span className="inline-block mt-1.5 text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300">
+                                  Preventista: {preventistaNombre}
                                 </span>
                               )}
                             </div>
                           </div>
 
                           <div className="text-right shrink-0 tabular-nums">
-                            <div className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                              Total
+                            </div>
+                            <div className="text-base sm:text-lg font-black text-amber-600 dark:text-amber-400 leading-tight">
                               {formatearBs(ped.total)}
                             </div>
-                            {etapa === 'pendiente_alistar' && (
-                              <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-400">
-                                1. Pendiente
-                              </span>
-                            )}
-                            {etapa === 'entregado_preventista' && (
-                              <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-700 dark:text-sky-400">
-                                2. Con Preventista
-                              </span>
-                            )}
-                            {etapa === 'cobrado_preventista' && (
-                              <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
-                                3. Cobrado · Rendir
-                              </span>
-                            )}
-                            {etapa === 'rendido_dueno' && (
-                              <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-white/[0.08] text-slate-600 dark:text-slate-300">
-                                4. Dinero en Dueño
-                              </span>
+
+                            {(etapa === 'cobrado_preventista' ||
+                              etapa === 'rendido_dueno') && (
+                              <div className="text-[10px] text-slate-400 mt-0.5 space-y-0.5">
+                                <div>
+                                  Efec: {formatearBs(ped.monto_efectivo)} · QR:{' '}
+                                  {formatearBs(ped.monto_qr)}
+                                </div>
+                                {Number(ped.saldo_credito) > 0 && (
+                                  <div className="text-amber-600 dark:text-amber-400 font-bold">
+                                    Créd: {formatearBs(ped.saldo_credito)}
+                                  </div>
+                                )}
+                              </div>
                             )}
                           </div>
                         </div>
 
-                        {/* Líneas de productos */}
-                        <div className="border-t border-slate-100 dark:border-white/[0.06] pt-2 divide-y divide-slate-100 dark:divide-white/[0.05]">
+                        {/* Cuerpo de la tarjeta: Lista ordenada de bebidas pedidas */}
+                        <div className="rounded-xl bg-slate-50/90 dark:bg-[#11141B] border border-slate-200/75 dark:border-white/[0.06] px-3.5 py-2 divide-y divide-slate-200/60 dark:divide-white/[0.05] tabular-nums">
                           {lineasAgrupadas.map((linea) => {
                             const prodCat =
                               mapaProductosPorId[linea.producto_id] ||
                               linea.productos ||
                               {}
-                            const unidPaq =
-                              Number(prodCat.unidades_por_paquete) || 6
-                            const imagenProd =
-                              prodCat.imagen_url ||
-                              linea.productos?.imagen_url ||
-                              ''
-
                             const esBonoManual =
                               linea.tipo_venta === 'bono_regalo'
                             const esBonoPromo =
@@ -1583,11 +1902,11 @@ export default function DespachoPage() {
                               etiquetaCantidad = `${
                                 linea.unidades_totales_descontar ||
                                 linea.cantidad
-                              } Bot surtidas`
+                              } Bot surt.`
                             } else if (esBonoPromo) {
-                              etiquetaCantidad = `+${linea.cantidad} Paq promo`
+                              etiquetaCantidad = `+${linea.cantidad} Paq Gratis`
                             } else if (esBonoManual) {
-                              etiquetaCantidad = `+${linea.unidades_totales_descontar} Bot bono`
+                              etiquetaCantidad = `+${linea.unidades_totales_descontar} Bot Bono`
                             } else {
                               etiquetaCantidad = `${linea.cantidad} Bot`
                             }
@@ -1595,50 +1914,32 @@ export default function DespachoPage() {
                             return (
                               <div
                                 key={linea.id}
-                                className="py-2 flex items-center justify-between gap-3 text-xs tabular-nums"
+                                className="py-1.5 first:pt-0.5 last:pb-0.5 flex items-center justify-between gap-3 text-xs"
                               >
-                                <div className="flex items-center gap-3 min-w-0">
-                                  <div className="w-8.5 h-10.5 rounded-xl bg-[#F6F5F2] dark:bg-white/[0.04] flex items-center justify-center shrink-0 overflow-hidden">
-                                    <BottleVisual
-                                      imagenUrl={imagenProd}
-                                      nombre={prodCat.nombre || 'Bebida'}
-                                      alturaClass="h-8.5"
-                                    />
+                                <div className="min-w-0">
+                                  <div className="font-semibold text-slate-800 dark:text-slate-200 truncate">
+                                    {prodCat.nombre || 'Bebida'}
+                                    {prodCat.sabor ? ` (${prodCat.sabor})` : ''}
                                   </div>
-
-                                  <div className="min-w-0">
-                                    <div className="font-semibold text-slate-900 dark:text-white truncate">
-                                      {prodCat.nombre || 'Bebida'}
-                                      {prodCat.sabor
-                                        ? ` · ${prodCat.sabor}`
-                                        : ''}
+                                  {linea.nota_surtido && (
+                                    <div className="text-[10px] text-slate-400 truncate">
+                                      {linea.nota_surtido}
                                     </div>
-
-                                    <div className="flex items-center gap-1.5 text-xs mt-0.5">
-                                      <span
-                                        className={
-                                          esBono
-                                            ? 'font-bold text-amber-700 dark:text-amber-400'
-                                            : 'font-bold text-slate-800 dark:text-amber-400'
-                                        }
-                                      >
-                                        {etiquetaCantidad}
-                                      </span>
-                                      <span className="text-[11px] text-slate-400">
-                                        · Pack x{unidPaq}
-                                      </span>
-                                    </div>
-                                  </div>
+                                  )}
                                 </div>
 
                                 <div className="flex items-center gap-2 shrink-0">
                                   <span
-                                    className={
+                                    className={`px-2 py-0.5 rounded-md font-extrabold text-[11px] ${
                                       esBono
-                                        ? 'text-[11px] font-bold text-amber-700 dark:text-amber-400'
-                                        : 'text-sm font-bold text-slate-900 dark:text-white'
-                                    }
+                                        ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                                        : 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                                    }`}
                                   >
+                                    {etiquetaCantidad}
+                                  </span>
+
+                                  <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 min-w-[56px] text-right">
                                     {esBono
                                       ? 'Gratis'
                                       : formatearBs(linea.subtotal)}
@@ -1653,9 +1954,9 @@ export default function DespachoPage() {
                                           eliminarBonoDePedido(linea.id)
                                         }
                                         title="Quitar bono"
-                                        className="p-1 rounded text-slate-400 hover:text-red-500 transition cursor-pointer"
+                                        className="text-slate-400 hover:text-red-500 cursor-pointer"
                                       >
-                                        <Trash2 size={13} />
+                                        <Trash2 size={12} />
                                       </button>
                                     )}
                                 </div>
@@ -1663,63 +1964,26 @@ export default function DespachoPage() {
                             )
                           })}
                         </div>
-
-                        {/* Trazabilidad clara según la etapa */}
-                        {etapa === 'entregado_preventista' && (
-                          <div className="pt-2 border-t border-slate-100 dark:border-white/[0.06] flex flex-wrap items-center justify-between gap-2 text-[11px] text-sky-700 dark:text-sky-400">
-                            <span>
-                              Entregado a{' '}
-                              <strong>{preventistaNombre}</strong>{' '}
-                              {custodia.fecha_despacho
-                                ? `(${formatearFechaCorta(custodia.fecha_despacho)})`
-                                : ''}
-                            </span>
-                            <span className="text-slate-400">
-                              Pendiente cobro al cliente
-                            </span>
-                          </div>
-                        )}
-
-                        {(etapa === 'cobrado_preventista' ||
-                          etapa === 'rendido_dueno') && (
-                          <div className="pt-2 border-t border-slate-100 dark:border-white/[0.06] space-y-1 text-[11px] tabular-nums">
-                            <div className="flex flex-wrap items-center justify-between gap-2 text-slate-600 dark:text-slate-300">
-                              <span>
-                                Efectivo:{' '}
-                                <strong>
-                                  {formatearBs(ped.monto_efectivo)}
-                                </strong>{' '}
-                                · QR:{' '}
-                                <strong>{formatearBs(ped.monto_qr)}</strong>
-                              </span>
-                              {Number(ped.saldo_credito) > 0 ? (
-                                <span className="font-bold text-amber-700 dark:text-amber-400">
-                                  Crédito {formatearBs(ped.saldo_credito)}
-                                </span>
-                              ) : (
-                                <span className="font-semibold text-emerald-600 dark:text-emerald-400">
-                                  Cobrado 100%
-                                </span>
-                              )}
-                            </div>
-
-                            {etapa === 'rendido_dueno' &&
-                              custodia.fecha_rendicion && (
-                                <div className="text-emerald-600 dark:text-emerald-400 font-medium">
-                                  Dinero recibido por{' '}
-                                  {custodia.recibido_por_nombre || 'Dueño'} ·{' '}
-                                  {formatearFechaCorta(custodia.fecha_rendicion)}
-                                </div>
-                              )}
-                          </div>
-                        )}
                       </div>
 
-                      {/* Pie de Acciones según Etapa */}
-                      <div className="px-4 sm:px-5 py-2.5 border-t border-slate-100 dark:border-white/[0.06] flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-1">
+                      {/* Pie de la tarjeta: Cancelar pedido + Utilidades + Acción principal */}
+                      <div className="pt-2.5 border-t border-slate-100 dark:border-white/[0.06] flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
+                          {puedeCancelar && (
+                            <button
+                              type="button"
+                              onClick={() => setPedidoCancelarModal(ped)}
+                              title="Cancelar este pedido"
+                              className="h-8.5 px-2.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-600 dark:text-red-400 text-xs font-bold inline-flex items-center gap-1.5 transition cursor-pointer"
+                            >
+                              <Trash2 size={13} />
+                              <span>Cancelar</span>
+                            </button>
+                          )}
+
                           <button
                             type="button"
+                            title="Descargar PDF"
                             onClick={() =>
                               generarYCompartirPDF(
                                 ped,
@@ -1729,10 +1993,9 @@ export default function DespachoPage() {
                                 false
                               )
                             }
-                            className="h-8 px-2.5 rounded-lg text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.06] text-xs font-medium inline-flex items-center gap-1.5 transition cursor-pointer"
+                            className="h-8.5 w-8.5 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200 dark:hover:bg-white/[0.12] text-slate-600 dark:text-slate-300 inline-flex items-center justify-center transition cursor-pointer"
                           >
-                            <Download size={13} />
-                            <span>PDF</span>
+                            <Download size={14} />
                           </button>
 
                           <a
@@ -1744,27 +2007,27 @@ export default function DespachoPage() {
                             )}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="h-8 px-2.5 rounded-lg text-slate-500 hover:text-emerald-600 dark:text-slate-400 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-xs font-medium inline-flex items-center gap-1.5 transition no-underline"
+                            title="Enviar por WhatsApp"
+                            className="h-8.5 w-8.5 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-emerald-500/15 text-slate-600 dark:text-slate-300 hover:text-emerald-500 inline-flex items-center justify-center transition no-underline"
                           >
-                            <MessageCircle size={13} />
-                            <span>WhatsApp</span>
+                            <MessageCircle size={14} />
                           </a>
                         </div>
 
-                        {/* Acciones Etapa 1: Bono + Entregar a Preventista */}
-                        {etapa === 'pendiente_alistar' && (
-                          <div className="flex items-center gap-2">
-                            {esAdmin && (
-                              <button
-                                type="button"
-                                onClick={() => abrirModalBono(ped)}
-                                className="h-8 px-2.5 rounded-lg text-amber-700 dark:text-amber-400 hover:bg-amber-500/12 text-xs font-semibold inline-flex items-center gap-1 transition cursor-pointer"
-                              >
-                                <Gift size={13} />
-                                <span>+ Bono</span>
-                              </button>
-                            )}
+                        <div className="flex items-center gap-1.5 ml-auto">
+                          {etapa === 'pendiente_alistar' && esAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => abrirModalBono(ped)}
+                              title="Agregar bono gratis"
+                              className="h-8.5 px-2.5 rounded-xl bg-amber-500/12 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 text-xs font-bold inline-flex items-center gap-1 transition cursor-pointer"
+                            >
+                              <Gift size={13} />
+                              <span>Bono</span>
+                            </button>
+                          )}
 
+                          {etapa === 'pendiente_alistar' && (
                             <button
                               type="button"
                               disabled={despachandoId !== null}
@@ -1774,46 +2037,63 @@ export default function DespachoPage() {
                                   preventistaNombre
                                 )
                               }
-                              className="h-8 px-3.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 shadow-2xs transition cursor-pointer disabled:opacity-50"
+                              className="h-8.5 px-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold inline-flex items-center gap-1.5 shadow-2xs transition cursor-pointer disabled:opacity-50"
                             >
                               <PackageCheck
-                                size={13}
+                                size={14}
                                 className="stroke-[2.5]"
                               />
                               <span>
                                 {despachandoId === ped.id
                                   ? 'Entregando...'
-                                  : 'Entregar a Preventista'}
+                                  : 'Entregar'}
                               </span>
                             </button>
-                          </div>
-                        )}
+                          )}
 
-                        {/* Acciones Etapa 2: Registrar Cobro Cliente (respaldo si lo hace Caja/Admin) */}
-                        {etapa === 'entregado_preventista' && (
-                          <button
-                            type="button"
-                            onClick={() => abrirModalLiquidacion(ped)}
-                            className="h-8 px-3.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-2xs transition cursor-pointer"
-                          >
-                            <Banknote size={13} />
-                            <span>Cobrar Cliente</span>
-                          </button>
-                        )}
+                          {etapa === 'entregado_preventista' && (
+                            <button
+                              type="button"
+                              onClick={() => abrirModalLiquidacion(ped)}
+                              className="h-8.5 px-3.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-2xs transition cursor-pointer"
+                            >
+                              <Banknote size={14} />
+                              <span>Cobrar</span>
+                            </button>
+                          )}
 
-                        {/* Acciones Etapa 3: Recibir Dinero Individual (Solo Dueño) */}
-                        {etapa === 'cobrado_preventista' && esAdmin && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              abrirModalRecepcionDueno([ped], preventistaNombre)
-                            }
-                            className="h-8 px-3.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-2xs transition cursor-pointer"
-                          >
-                            <ShieldCheck size={13} />
-                            <span>Recibir Dinero</span>
-                          </button>
-                        )}
+                          {etapa === 'cobrado_preventista' && esAdmin && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                abrirModalRecepcionDueno(
+                                  [ped],
+                                  preventistaNombre
+                                )
+                              }
+                              className="h-8.5 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-2xs transition cursor-pointer"
+                            >
+                              <ShieldCheck size={14} />
+                              <span>Recibir</span>
+                            </button>
+                          )}
+
+                          {etapa === 'rendido_dueno' && (
+                            <span
+                              title={
+                                custodia.fecha_rendicion
+                                  ? `Recibido ${formatearFechaCorta(
+                                      custodia.fecha_rendicion
+                                    )}`
+                                  : 'Liquidado'
+                              }
+                              className="h-8.5 px-3 rounded-xl bg-emerald-500/12 text-emerald-700 dark:text-emerald-400 text-xs font-bold inline-flex items-center gap-1"
+                            >
+                              <Check size={13} className="stroke-[2.5]" />
+                              <span>Rendido</span>
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </article>
                   )
@@ -1821,19 +2101,19 @@ export default function DespachoPage() {
             </div>
 
             {camionActivo.pedidos.length > TAMANO_PAGINA_TIENDAS && (
-              <div className="bg-white dark:bg-[#161922] rounded-2xl border border-slate-200/80 dark:border-white/[0.07]">
+              <div className="bg-white dark:bg-[#161922] rounded-2xl border border-slate-200/85 dark:border-white/[0.08] overflow-hidden">
                 <PaginationBar
                   paginaActual={paginaTiendas}
                   totalRegistros={camionActivo.pedidos.length}
                   tamanoPagina={TAMANO_PAGINA_TIENDAS}
                   onCambiarPagina={setPaginaTiendas}
-                  etiquetaItem="pedidos de tienda"
+                  etiquetaItem="pedidos de clientes"
                 />
               </div>
             )}
           </section>
         </div>
-      )}
+      ) : null}
 
       {/* ================= MODAL 0: CONFIRMAR ENTREGA DE CARGA AL PREVENTISTA ================= */}
       {modalDespachoCamion && (
@@ -2338,6 +2618,93 @@ export default function DespachoPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL 4: CONFIRMAR CANCELACIÓN DE PEDIDO ================= */}
+      {pedidoCancelarModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-white dark:bg-[#161922] rounded-2xl border border-slate-200/90 dark:border-white/10 shadow-2xl max-w-md w-full overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 dark:border-white/[0.08] flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-red-500/15 text-red-600 dark:text-red-400 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                    Cancelar Pedido
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {pedidoCancelarModal.clientes?.nombre || 'Cliente'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPedidoCancelarModal(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="p-3.5 rounded-xl bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/25 space-y-1 text-xs text-slate-800 dark:text-slate-200 tabular-nums">
+                <div className="flex items-center justify-between">
+                  <span>Cliente:</span>
+                  <strong>
+                    {pedidoCancelarModal.clientes?.nombre || 'Cliente'}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Monto del pedido:</span>
+                  <strong className="text-red-600 dark:text-red-400">
+                    {formatearBs(pedidoCancelarModal.total)}
+                  </strong>
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                {pedidoCancelarModal.estado === 'entregado' ? (
+                  <>
+                    Este pedido ya había descontado mercadería. Al cancelarlo,{' '}
+                    <strong>
+                      todas sus bebidas se devolverán automáticamente al stock de
+                      Tienda Central
+                    </strong>{' '}
+                    y el pedido quedará eliminado.
+                  </>
+                ) : (
+                  <>
+                    Este pedido aún no fue despachado. Se eliminará de la lista
+                    de pedidos pendientes sin afectar el inventario.
+                  </>
+                )}
+              </p>
+
+              <div className="pt-2 border-t border-slate-100 dark:border-white/[0.08] flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={cancelandoPedido}
+                  onClick={() => setPedidoCancelarModal(null)}
+                  className="h-9.5 px-4 rounded-xl bg-slate-100 dark:bg-white/[0.06] text-slate-700 dark:text-slate-300 text-xs font-semibold cursor-pointer"
+                >
+                  Volver
+                </button>
+                <button
+                  type="button"
+                  disabled={cancelandoPedido}
+                  onClick={ejecutarCancelacionPedido}
+                  className="h-9.5 px-5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-extrabold inline-flex items-center gap-1.5 shadow-2xs transition cursor-pointer disabled:opacity-50"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>
+                    {cancelandoPedido ? 'Cancelando...' : 'Sí, Cancelar Pedido'}
+                  </span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

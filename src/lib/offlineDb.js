@@ -1,6 +1,10 @@
 import Dexie from 'dexie'
 import { useState, useEffect, useCallback } from 'react'
-import { supabase, enriquecerProductosConCosto } from './supabase'
+import {
+  supabase,
+  enriquecerProductosConCosto,
+  enriquecerMarcasConLogo,
+} from './supabase'
 
 /**
  * Base de datos local IndexedDB con Dexie.js para operación 100% Offline en ruta
@@ -99,8 +103,9 @@ export async function actualizarCacheLocalDesdeSupabase() {
     }
 
     if (!resMarcas.error && resMarcas.data) {
+      const marcasConLogo = await enriquecerMarcasConLogo(resMarcas.data)
       await offlineDb.marcas_cache.clear()
-      await offlineDb.marcas_cache.bulkPut(resMarcas.data)
+      await offlineDb.marcas_cache.bulkPut(marcasConLogo)
     }
 
     return { ok: true }
@@ -122,9 +127,10 @@ export async function obtenerMarcasHibrido() {
         .eq('activo', true)
         .order('nombre', { ascending: true })
       if (!error && data) {
+        const marcasConLogo = await enriquecerMarcasConLogo(data)
         await offlineDb.marcas_cache.clear()
-        await offlineDb.marcas_cache.bulkPut(data)
-        return { marcas: data, origen: 'supabase' }
+        await offlineDb.marcas_cache.bulkPut(marcasConLogo)
+        return { marcas: marcasConLogo, origen: 'supabase' }
       }
     } catch {
       // Fallback a Dexie

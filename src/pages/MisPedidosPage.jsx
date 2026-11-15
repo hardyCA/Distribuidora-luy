@@ -22,6 +22,7 @@ import {
   ShieldCheck,
   AlertTriangle,
   Printer,
+  Trash2,
   X,
 } from 'lucide-react'
 import {
@@ -29,6 +30,7 @@ import {
   obtenerIdsPreventasEnCustodiaActiva,
   enriquecerVentasConCustodiaRuta,
   registrarCobroPreventistaEnCliente,
+  cancelarPedidoPreventa,
 } from '../lib/supabase'
 import { offlineDb, useOfflineSync } from '../lib/offlineDb'
 import {
@@ -68,6 +70,8 @@ export default function MisPedidosPage() {
   const [inputQr, setInputQr] = useState('')
   const [guardandoCobro, setGuardandoCobro] = useState(false)
   const [errorCobro, setErrorCobro] = useState('')
+  const [pedidoCancelar, setPedidoCancelar] = useState(null)
+  const [cancelandoPedido, setCancelandoPedido] = useState(false)
 
   const selectColumnasPedido = `
     id,
@@ -294,6 +298,7 @@ export default function MisPedidosPage() {
   const listaUnificada = useMemo(() => {
     const mapeadosOffline = pedidosOffline.map((item) => ({
       id: `dexie-${item.local_id}`,
+      local_id: item.local_id,
       codigo_local: item.codigo_local,
       tipo: item.cabecera?.tipo || 'preventa',
       estado: item.cabecera?.estado || 'pendiente_entrega',
@@ -455,6 +460,33 @@ export default function MisPedidosPage() {
       setErrorCobro(err.message || 'No se pudo guardar el cobro del pedido.')
     } finally {
       setGuardandoCobro(false)
+    }
+  }
+
+  const confirmarCancelarPedidoEnRuta = async () => {
+    if (!pedidoCancelar) return
+    setCancelandoPedido(true)
+    setErrorMsg('')
+    try {
+      const clienteNom =
+        pedidoCancelar.clientes?.nombre ||
+        pedidoCancelar.codigo_local ||
+        'Cliente'
+
+      if (pedidoCancelar.esOffline && pedidoCancelar.local_id) {
+        await offlineDb.pedidos_pendientes.delete(pedidoCancelar.local_id)
+      } else {
+        await cancelarPedidoPreventa({ pedido: pedidoCancelar })
+      }
+
+      setPedidoCancelar(null)
+      setMensajeSync(`Pedido de ${clienteNom} cancelado correctamente.`)
+      await cargarPedidos()
+      setTimeout(() => setMensajeSync(''), 4500)
+    } catch (err) {
+      setErrorMsg(err.message || 'No se pudo cancelar el pedido.')
+    } finally {
+      setCancelandoPedido(false)
     }
   }
 
@@ -952,6 +984,20 @@ export default function MisPedidosPage() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
+                    {(ped.esOffline ||
+                      etapa === 'pendiente_alistar' ||
+                      etapa === 'cotizacion') && (
+                      <button
+                        type="button"
+                        onClick={() => setPedidoCancelar(ped)}
+                        title="Cancelar pedido"
+                        className="h-9 px-2.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-600 dark:text-red-400 text-xs font-bold inline-flex items-center gap-1 transition cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Cancelar</span>
+                      </button>
+                    )}
+
                     <button
                       type="button"
                       onClick={() =>
@@ -1164,6 +1210,72 @@ export default function MisPedidosPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL CONFIRMAR CANCELACIÓN EN MIS PEDIDOS ================= */}
+      {pedidoCancelar && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-white dark:bg-[#161922] rounded-2xl border border-slate-200/90 dark:border-white/10 shadow-2xl max-w-md w-full overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 dark:border-white/[0.08] flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-red-500/15 text-red-600 dark:text-red-400 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                    Cancelar Pedido
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {pedidoCancelar.clientes?.nombre || 'Cliente'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPedidoCancelar(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                ¿Seguro que deseas cancelar el pedido de{' '}
+                <strong className="text-slate-800 dark:text-slate-200">
+                  {pedidoCancelar.clientes?.nombre || 'este cliente'}
+                </strong>{' '}
+                por{' '}
+                <strong className="text-red-600 dark:text-red-400">
+                  {formatearBs(pedidoCancelar.total)}
+                </strong>
+                ? Se quitará de inmediato de la lista de Tienda Central.
+              </p>
+
+              <div className="pt-2 border-t border-slate-100 dark:border-white/[0.08] flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={cancelandoPedido}
+                  onClick={() => setPedidoCancelar(null)}
+                  className="h-9.5 px-4 rounded-xl bg-slate-100 dark:bg-white/[0.06] text-slate-700 dark:text-slate-300 text-xs font-semibold cursor-pointer"
+                >
+                  Volver
+                </button>
+                <button
+                  type="button"
+                  disabled={cancelandoPedido}
+                  onClick={confirmarCancelarPedidoEnRuta}
+                  className="h-9.5 px-5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-extrabold inline-flex items-center gap-1.5 shadow-2xs transition cursor-pointer disabled:opacity-50"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>
+                    {cancelandoPedido ? 'Cancelando...' : 'Sí, Cancelar Pedido'}
+                  </span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

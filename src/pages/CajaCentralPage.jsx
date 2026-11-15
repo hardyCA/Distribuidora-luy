@@ -26,10 +26,17 @@ import {
   supabase,
   obtenerOCrearPerfilPorRol,
   enriquecerProductosConCosto,
+  obtenerMapaLogosMarcas,
+  obtenerLogoDeMarca,
+  enriquecerMarcasConLogo,
 } from '../lib/supabase'
 import { useRole } from '../context/RoleContext'
 import { formatearStock } from '../utils/stock'
 import BottleVisual from '../components/BottleVisual'
+import { BrandBoxesGrid, BrandActiveBar } from '../components/BrandBoxesGrid'
+import OrderSummaryTable, {
+  formatearResumenUnidadesPedido,
+} from '../components/OrderSummaryTable'
 import ModalSurtidoSabores from '../components/ModalSurtidoSabores'
 import {
   calcularResumenCarritoIntegral,
@@ -46,6 +53,7 @@ export default function CajaCentralPage() {
 
   const [productos, setProductos] = useState([])
   const [marcasTabla, setMarcasTabla] = useState([])
+  const [mapaLogosMarcas, setMapaLogosMarcas] = useState({})
   const [clientes, setClientes] = useState([])
   const [stockCentralMap, setStockCentralMap] = useState({})
   const [stockAlmacenMap, setStockAlmacenMap] = useState({})
@@ -57,9 +65,9 @@ export default function CajaCentralPage() {
   const [buscadorClienteAbierto, setBuscadorClienteAbierto] = useState(false)
   const [busquedaCliente, setBusquedaCliente] = useState('')
 
-  // Filtros del catálogo POS + Selector global Paquetes / Botellas (por defecto Paquetes)
+  // Filtros del catálogo POS (Nivel 1: Cajas de Marcas -> Nivel 2: Bebidas de la Marca)
   const [busquedaProd, setBusquedaProd] = useState('')
-  const [marcaFiltro, setMarcaFiltro] = useState('TODAS')
+  const [marcaFiltro, setMarcaFiltro] = useState(null) // null = Cajas de Marcas | string = Marca activa | 'TODAS'
   const [modoUnidadPos, setModoUnidadPos] = useState('paquetes') // 'paquetes' | 'sueltas'
 
   // Carrito POS: { [producto_id]: { paquetes: number, sueltas: number } }
@@ -81,7 +89,7 @@ export default function CajaCentralPage() {
   const cargarDatosPOS = useCallback(async () => {
     setCargando(true)
     try {
-      const [resProds, resMarcas, resCli, resUbic, resInv, resVentas] =
+      const [resProds, resMarcas, resCli, resUbic, resInv, resVentas, mapaLogos] =
         await Promise.all([
           supabase
             .from('productos')
@@ -122,11 +130,16 @@ export default function CajaCentralPage() {
             .eq('tipo', 'venta_directa')
             .order('fecha_pedido', { ascending: false })
             .limit(30),
+          obtenerMapaLogosMarcas(false),
         ])
 
-      const prodsConCosto = await enriquecerProductosConCosto(resProds.data || [])
+      const [prodsConCosto, marcasConLogo] = await Promise.all([
+        enriquecerProductosConCosto(resProds.data || []),
+        enriquecerMarcasConLogo(resMarcas.data || []),
+      ])
       setProductos(prodsConCosto)
-      setMarcasTabla(resMarcas.data || [])
+      setMarcasTabla(marcasConLogo)
+      setMapaLogosMarcas(mapaLogos || {})
       setClientes(resCli.data || [])
       setVentasHoy(resVentas.data || [])
 
@@ -169,7 +182,13 @@ export default function CajaCentralPage() {
   const productosFiltrados = useMemo(() => {
     const q = busquedaProd.trim().toLowerCase()
     return productos.filter((p) => {
-      if (marcaFiltro !== 'TODAS' && p.marca !== marcaFiltro) return false
+      if (
+        marcaFiltro &&
+        marcaFiltro !== 'TODAS' &&
+        (p.marca || '').trim() !== marcaFiltro
+      ) {
+        return false
+      }
       if (!q) return true
       return (
         p.nombre?.toLowerCase().includes(q) ||
@@ -179,6 +198,75 @@ export default function CajaCentralPage() {
       )
     })
   }, [productos, busquedaProd, marcaFiltro])
+
+  const mostrarCajasMarcasPos = marcaFiltro === null && !busquedaProd.trim()
+
+  // Tarjetas de Cajas de Marcas para Caja Central POS (Logo oficial o Nombre Grande, carrito y stock Central)
+  const tarjetasMarcasPos = useMemo(() => {
+    return marcasDisponibles
+      .map((nombreMarca) => {
+        const prodsMarca = productos.filter(
+          (p) => (p.marca || '').trim() === nombreMarca
+        )
+        const filaMarca = marcasTabla.find(
+          (m) => (m.nombre || '').trim().toLowerCase() === nombreMarca.toLowerCase()
+        )
+        const logoUrl =
+          filaMarca?.logo_url || obtenerLogoDeMarca(nombreMarca, mapaLogosMarcas)
+
+        let paqTotalMarca = 0
+        let botSueltasMarca = 0
+        let sinStockCentral = 0
+        const gruposSurtidoMarca = new Set()
+
+        prodsMarca.forEach((p) => {
+          const cant = carritoPos[p.id]
+          if (cant) {
+            paqTotalMarca += Number(cant.paquetes) || 0
+            botSueltasMarca += Number(cant.sueltas) || 0
+          }
+          if ((stockCentralMap[p.id] || 0) <= 0) {
+            sinStockCentral += 1
+          }
+          const grp = obtenerGrupoSurtido(p)
+          if (grp) gruposSurtidoMarca.add(grp)
+        })
+
+        gruposSurtidoMarca.forEach((grp) => {
+          paqTotalMarca += Number(paquetesSurtidosPos[grp]?.paquetes) || 0
+        })
+
+        let badgeActivo = ''
+        if (paqTotalMarca > 0 && botSueltasMarca > 0) {
+          badgeActivo = `${paqTotalMarca} Paq + ${botSueltasMarca} Bot`
+        } else if (paqTotalMarca > 0) {
+          badgeActivo = `${paqTotalMarca} Paq`
+        } else if (botSueltasMarca > 0) {
+          badgeActivo = `${botSueltasMarca} Bot`
+        }
+
+        return {
+          nombre: nombreMarca,
+          logoUrl,
+          cantidadProductos: prodsMarca.length,
+          permiteSurtido: gruposSurtidoMarca.size > 0,
+          badgeActivo,
+          alertaTexto:
+            sinStockCentral > 0 ? `${sinStockCentral} sin Central` : '',
+          alertaTipo:
+            sinStockCentral === prodsMarca.length ? 'danger' : 'warning',
+        }
+      })
+      .filter((m) => m.cantidadProductos > 0)
+  }, [
+    marcasDisponibles,
+    marcasTabla,
+    mapaLogosMarcas,
+    productos,
+    carritoPos,
+    paquetesSurtidosPos,
+    stockCentralMap,
+  ])
 
   const gruposSurtiblesEnVistaPos = useMemo(() => {
     const s = new Set()
@@ -230,6 +318,19 @@ export default function CajaCentralPage() {
       delete copia[grupoKey]
       return copia
     })
+  }
+
+  const quitarLineaDelTicketPos = (item) => {
+    if (!item) return
+    if (item.tipo_venta === 'paquete_surtido' && item.grupo_surtido) {
+      eliminarSurtidoPos(item.grupo_surtido)
+      return
+    }
+    if (item.tipo_venta === 'paquete') {
+      actualizarCantidadPos(item.producto_id, 'paquetes', 0)
+    } else if (item.tipo_venta === 'unidad') {
+      actualizarCantidadPos(item.producto_id, 'sueltas', 0)
+    }
   }
 
   // Cálculo automático del carrito con escalas mayorista/bonificación/surtidos y validación de stock en Tienda Central
@@ -413,6 +514,8 @@ export default function CajaCentralPage() {
 
       setCarritoPos({})
       setPaquetesSurtidosPos({})
+      setMarcaFiltro(null)
+      setBusquedaProd('')
       await cargarDatosPOS()
     } catch (err) {
       console.error('Error en venta directa POS:', err)
@@ -554,115 +657,135 @@ export default function CajaCentralPage() {
             )}
           </div>
 
-          {/* 2. FILA LIMPIA DE BÚSQUEDA Y PÍLDORAS DE MARCA (SIN CAJA ENVOLVENTE) */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-            <div className="relative w-full sm:w-72 shrink-0">
-              <Search size={16} className="text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={busquedaProd}
-                onChange={(e) => setBusquedaProd(e.target.value)}
-                placeholder="Buscar bebida o marca..."
-                className="w-full h-9 pl-9 pr-8 rounded-lg bg-white dark:bg-[#1A1E29] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-amber-500 focus:outline-none"
-              />
-              {busquedaProd && (
-                <button
-                  type="button"
-                  onClick={() => setBusquedaProd('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400"
-                >
-                  <X size={15} />
-                </button>
-              )}
-            </div>
-
-            {marcasDisponibles.length > 0 && (
-              <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 min-w-0">
-                <button
-                  type="button"
-                  onClick={() => setMarcaFiltro('TODAS')}
-                  className={`h-8 px-3 rounded-lg text-xs font-medium shrink-0 cursor-pointer ${
-                    marcaFiltro === 'TODAS'
-                      ? 'bg-slate-900 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold'
-                      : 'bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300'
-                  }`}
-                >
-                  Todas
-                </button>
-                {marcasDisponibles.map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => setMarcaFiltro(m)}
-                    className={`h-8 px-3 rounded-lg text-xs font-medium shrink-0 cursor-pointer ${
-                      marcaFiltro === m
-                        ? 'bg-slate-900 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold'
-                        : 'bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300'
-                    }`}
-                  >
-                    {m}
-                  </button>
-                ))}
-              </div>
+          {/* 2. BUSCADOR DIRECTO INTELIGENTE */}
+          <div className="relative w-full">
+            <Search
+              size={16}
+              className="text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+            />
+            <input
+              type="text"
+              value={busquedaProd}
+              onChange={(e) => setBusquedaProd(e.target.value)}
+              placeholder={
+                marcaFiltro && marcaFiltro !== 'TODAS'
+                  ? `Buscar bebida o sabor dentro de ${marcaFiltro}...`
+                  : 'Buscar bebida, marca o sabor directo...'
+              }
+              className="w-full h-10 pl-9.5 pr-8 rounded-xl bg-white dark:bg-[#161922] border border-slate-200/85 dark:border-white/[0.08] text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-amber-500 focus:outline-none transition"
+            />
+            {busquedaProd && (
+              <button
+                type="button"
+                onClick={() => setBusquedaProd('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+              >
+                <X size={15} />
+              </button>
             )}
           </div>
 
-          {/* Fila limpia: Surtidos por marca (izq) + Selector global Por Paquete / Por Botella (der) */}
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-1.5">
-              {gruposSurtiblesEnVistaPos.map((grupo) => {
-                const surtidoActual = paquetesSurtidosPos[grupo]
-                const cantPaqSurt = Number(surtidoActual?.paquetes) || 0
-                return (
+          {/* 3. NAVEGACIÓN POR CAJAS DE MARCAS (NIVEL 1) -> BEBIDAS DE LA MARCA (NIVEL 2) */}
+          {cargando ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3.5">
+              {[1, 2, 3, 4, 5, 6].map((n) => (
+                <div
+                  key={n}
+                  className="bg-white dark:bg-[#161922] border border-slate-200/70 dark:border-white/[0.06] rounded-2xl p-4 h-44 animate-pulse"
+                />
+              ))}
+            </div>
+          ) : mostrarCajasMarcasPos ? (
+            <BrandBoxesGrid
+              marcas={tarjetasMarcasPos}
+              columnasClass="grid-cols-2 sm:grid-cols-3"
+              onSelectMarca={(nombreMarca) => setMarcaFiltro(nombreMarca)}
+              onVerTodas={() => setMarcaFiltro('TODAS')}
+              tituloSeccion="Elige una marca para cobrar"
+              textoVerTodas="Ver todas"
+            />
+          ) : (
+            <>
+              <BrandActiveBar
+                marcaActiva={
+                  marcaFiltro || `Resultados para "${busquedaProd.trim()}"`
+                }
+                logoUrl={
+                  marcaFiltro && marcaFiltro !== 'TODAS'
+                    ? marcasTabla.find(
+                        (m) =>
+                          (m.nombre || '').trim().toLowerCase() ===
+                          marcaFiltro.toLowerCase()
+                      )?.logo_url ||
+                      obtenerLogoDeMarca(marcaFiltro, mapaLogosMarcas)
+                    : ''
+                }
+                cantidadItems={productosFiltrados.length}
+                onVolverMarcas={() => {
+                  setMarcaFiltro(null)
+                  setBusquedaProd('')
+                }}
+              >
+                <div className="inline-flex items-center p-0.5 rounded-xl bg-slate-100 dark:bg-white/[0.06] border border-slate-200/70 dark:border-white/[0.07] shrink-0">
                   <button
-                    key={grupo}
                     type="button"
-                    onClick={() => setGrupoSurtidoModalPos(grupo)}
-                    className={`h-8 px-3 rounded-lg text-xs font-medium inline-flex items-center gap-1.5 transition cursor-pointer ${
-                      cantPaqSurt > 0
-                        ? 'bg-amber-500/15 border border-amber-500/40 text-amber-800 dark:text-amber-300 font-semibold'
-                        : 'bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/10'
+                    onClick={() => setModoUnidadPos('paquetes')}
+                    className={`h-7.5 px-3 rounded-lg text-xs transition cursor-pointer inline-flex items-center gap-1.5 ${
+                      modoUnidadPos === 'paquetes'
+                        ? 'bg-slate-900 text-white dark:bg-amber-500 dark:text-slate-950 font-semibold shadow-2xs'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 font-medium'
                     }`}
                   >
-                    <Layers size={14} className="text-amber-500 shrink-0" />
-                    <span>
-                      Surtir sabores: {grupo}
-                      {cantPaqSurt > 0 ? ` (${cantPaqSurt} paq)` : ''}
-                    </span>
+                    <span>Por Paquete</span>
                   </button>
-                )
-              })}
-            </div>
+                  <button
+                    type="button"
+                    onClick={() => setModoUnidadPos('sueltas')}
+                    className={`h-7.5 px-3 rounded-lg text-xs transition cursor-pointer inline-flex items-center gap-1.5 ${
+                      modoUnidadPos === 'sueltas'
+                        ? 'bg-slate-900 text-white dark:bg-amber-500 dark:text-slate-950 font-semibold shadow-2xs'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 font-medium'
+                    }`}
+                  >
+                    <span>Por Botella</span>
+                  </button>
+                </div>
+              </BrandActiveBar>
 
-            <div className="ml-auto inline-flex items-center p-0.5 rounded-xl bg-white dark:bg-[#161922] border border-slate-200/80 dark:border-white/[0.08] shrink-0">
-              <button
-                type="button"
-                onClick={() => setModoUnidadPos('paquetes')}
-                className={`h-7.5 px-3 rounded-lg text-xs transition cursor-pointer inline-flex items-center gap-1.5 ${
-                  modoUnidadPos === 'paquetes'
-                    ? 'bg-slate-900 text-white dark:bg-amber-500 dark:text-slate-950 font-semibold shadow-2xs'
-                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 font-medium'
-                }`}
-              >
-                <span>Por Paquete</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setModoUnidadPos('sueltas')}
-                className={`h-7.5 px-3 rounded-lg text-xs transition cursor-pointer inline-flex items-center gap-1.5 ${
-                  modoUnidadPos === 'sueltas'
-                    ? 'bg-slate-900 text-white dark:bg-amber-500 dark:text-slate-950 font-semibold shadow-2xs'
-                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 font-medium'
-                }`}
-              >
-                <span>Por Botella</span>
-              </button>
-            </div>
-          </div>
+              {gruposSurtiblesEnVistaPos.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {gruposSurtiblesEnVistaPos.map((grupo) => {
+                    const surtidoActual = paquetesSurtidosPos[grupo]
+                    const cantPaqSurt = Number(surtidoActual?.paquetes) || 0
+                    return (
+                      <button
+                        key={grupo}
+                        type="button"
+                        onClick={() => setGrupoSurtidoModalPos(grupo)}
+                        className={`h-8.5 px-3.5 rounded-xl text-xs font-medium inline-flex items-center gap-1.5 transition cursor-pointer ${
+                          cantPaqSurt > 0
+                            ? 'bg-amber-500/15 border border-amber-500/40 text-amber-800 dark:text-amber-300 font-semibold'
+                            : 'bg-white dark:bg-[#161922] border border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-slate-200 hover:border-amber-500/50'
+                        }`}
+                      >
+                        <Layers size={14} className="text-amber-500 shrink-0" />
+                        <span>
+                          Surtir sabores: {grupo}
+                          {cantPaqSurt > 0 ? ` (${cantPaqSurt} paq)` : ''}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
 
-          {/* 3. CATÁLOGO POS EDITORIAL MINIMALISTA CON ESCALAS AUTOMÁTICAS */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {productosFiltrados.map((prod) => {
+              {productosFiltrados.length === 0 ? (
+                <div className="bg-white dark:bg-[#161922] border border-slate-200/80 dark:border-white/[0.08] rounded-2xl p-8 text-center text-xs sm:text-sm text-slate-500 dark:text-slate-400">
+                  No se encontraron bebidas con ese filtro.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {productosFiltrados.map((prod) => {
               const unidPaq = Number(prod.unidades_por_paquete) || 6
               const minMayor = Number(prod.min_paquetes_mayor) || 5
               const tipoBeneficio = obtenerTipoBeneficio(prod)
@@ -768,30 +891,26 @@ export default function CajaCentralPage() {
                         </div>
                       </div>
 
-                      {/* Fila de Precios (Sin cajas ni bordes alrededor) */}
-                      <div
-                        className={`grid ${
-                          esFijo ? 'grid-cols-2' : 'grid-cols-3'
-                        } divide-x divide-stone-200/80 tabular-nums`}
-                      >
-                        <div className="pr-2">
-                          <span className="block text-[11px] text-stone-400 uppercase">
+                      {/* Precios en 3 filas horizontales limpias (Cero cortes de línea) */}
+                      <div className="divide-y divide-stone-200/75 dark:divide-white/[0.06] tabular-nums text-xs">
+                        <div className="py-1 flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-medium uppercase tracking-wide text-stone-400 dark:text-slate-400">
                             Botella
                           </span>
-                          <span className="block text-sm font-semibold text-stone-700 mt-0.5">
+                          <span className="font-semibold text-stone-700 dark:text-slate-200 whitespace-nowrap">
                             {formatearBs(prod.precio_unidad)}
                           </span>
                         </div>
 
-                        <div className="px-2">
-                          <span className="block text-[11px] text-stone-400 uppercase">
+                        <div className="py-1 flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-medium uppercase tracking-wide text-stone-400 dark:text-slate-400">
                             Paquete
                           </span>
                           <span
-                            className={`block text-sm mt-0.5 ${
+                            className={`whitespace-nowrap ${
                               cant.paquetes > 0 && !esMayorista
-                                ? 'font-extrabold text-stone-950 underline decoration-amber-500'
-                                : 'font-bold text-stone-900'
+                                ? 'font-extrabold text-stone-950 dark:text-white underline decoration-amber-500'
+                                : 'font-bold text-stone-900 dark:text-white'
                             }`}
                           >
                             {formatearBs(prod.precio_paquete_menor)}
@@ -799,26 +918,26 @@ export default function CajaCentralPage() {
                         </div>
 
                         {!esFijo && (
-                          <div className="pl-2">
+                          <div className="py-1 flex items-center justify-between gap-2">
                             {esBonificacion ? (
                               <>
-                                <span className="block text-[11px] text-amber-700 font-medium uppercase">
+                                <span className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
                                   Bonificación
                                 </span>
-                                <span className="block text-sm font-extrabold text-amber-700 mt-0.5">
-                                  {bonifCompra} + {bonifRegalo} Gratis
+                                <span className="font-extrabold text-amber-700 dark:text-amber-400 whitespace-nowrap">
+                                  {bonifCompra}+{bonifRegalo} Gratis
                                 </span>
                               </>
                             ) : (
                               <>
-                                <span className="block text-[11px] text-amber-700 font-medium uppercase">
+                                <span className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
                                   Mayor (+{minMayor} paq)
                                 </span>
                                 <span
-                                  className={`block text-base font-extrabold mt-0.5 ${
+                                  className={`font-extrabold whitespace-nowrap ${
                                     esMayorista
-                                      ? 'text-emerald-700'
-                                      : 'text-amber-700'
+                                      ? 'text-emerald-700 dark:text-emerald-400'
+                                      : 'text-amber-700 dark:text-amber-400'
                                   }`}
                                 >
                                   {formatearBs(prod.precio_paquete_mayor)}
@@ -829,8 +948,8 @@ export default function CajaCentralPage() {
                         )}
                       </div>
 
-                      {/* Pie de Stock Minimalista (1 sola línea inferior con status dots) */}
-                      <div className="mt-3.5 pt-2.5 border-t border-stone-200/70 flex flex-wrap items-center justify-between gap-2 text-xs tabular-nums">
+                      {/* Pie de Stock Minimalista */}
+                      <div className="mt-2.5 pt-2 border-t border-stone-200/70 dark:border-white/[0.07] flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs tabular-nums">
                         <span
                           title={`Stock en Tienda Central: ${stockDisp} botellas`}
                           className="inline-flex items-center gap-1.5 font-medium text-stone-800"
@@ -1025,17 +1144,20 @@ export default function CajaCentralPage() {
                 </article>
               )
             })}
-          </div>
+                </div>
+              )}
+            </>
+          )}
         </div>
 
-        {/* COLUMNA DERECHA (5 cols): Caja de Cobro y Método de Pago Integrado */}
+        {/* COLUMNA DERECHA (5 cols): Caja de Cobro y Método de Pago Integrado en Tabla Limpia */}
         <div className="lg:col-span-5 lg:sticky lg:top-20 space-y-4">
-          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden">
-            <div className="px-5 py-4 bg-slate-900 text-white flex items-center justify-between">
+          <div className="bg-white dark:bg-[#161922] rounded-2xl border border-slate-200/90 dark:border-white/[0.08] shadow-xs overflow-hidden">
+            <div className="px-5 py-4 bg-slate-900 dark:bg-[#11141B] text-white flex items-center justify-between border-b dark:border-white/10">
               <div className="flex items-center gap-2">
                 <Receipt className="w-4 h-4 text-amber-400" />
                 <span className="text-sm font-bold">
-                  Ticket de Caja y Liquidación ({resumenPos.detalles.length})
+                  Ticket de Caja ({resumenPos.detalles.length})
                 </span>
               </div>
               {resumenPos.detalles.length > 0 && (
@@ -1055,7 +1177,7 @@ export default function CajaCentralPage() {
 
             <div className="p-5 space-y-4">
               {errorPos && (
-                <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 font-semibold flex items-center gap-2">
+                <div className="p-3 rounded-xl bg-red-500/12 border border-red-500/30 text-xs text-red-700 dark:text-red-300 font-semibold flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 shrink-0" />
                   <span>{errorPos}</span>
                 </div>
@@ -1071,96 +1193,35 @@ export default function CajaCentralPage() {
                 </div>
               ) : (
                 <>
-                  {/* Líneas del carrito */}
-                  <div className="max-h-52 overflow-y-auto divide-y divide-slate-100">
-                    {resumenPos.detalles.map((item) => {
-                      const esBonificacion =
-                        item.tipo_venta === 'bono_promocion'
-                      const esSurtido = item.tipo_venta === 'paquete_surtido'
-
-                      if (esBonificacion) {
-                        return (
-                          <div
-                            key={item.id_linea}
-                            className="py-1.5 pl-3 pr-2 flex items-center justify-between gap-2 text-xs bg-amber-50/60 rounded-lg my-0.5"
-                          >
-                            <span className="font-semibold text-amber-800">
-                              + {item.cantidad} Paq. Gratis por bonificación (
-                              {item.producto_nombre})
-                            </span>
-                            <span className="font-extrabold text-amber-800 shrink-0">
-                              Bs 0
-                            </span>
-                          </div>
-                        )
-                      }
-
-                      return (
-                        <div
-                          key={item.id_linea}
-                          className="py-2 flex items-center justify-between gap-2 text-xs"
-                        >
-                          <div className="min-w-0">
-                            <div className="font-bold text-slate-900 truncate flex items-center gap-1.5">
-                              <span className="truncate">
-                                {item.producto_nombre}
-                              </span>
-                              {esSurtido && item.grupo_surtido && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setGrupoSurtidoModalPos(item.grupo_surtido)
-                                  }
-                                  className="text-[10px] font-semibold text-amber-700 hover:underline shrink-0 cursor-pointer"
-                                >
-                                  (Editar surtido)
-                                </button>
-                              )}
-                            </div>
-                            <div className="text-[11px] text-slate-500">
-                              {item.cantidad}{' '}
-                              {item.tipo_venta === 'paquete'
-                                ? `Paq. x${item.unidades_por_paquete}`
-                                : esSurtido
-                                ? `bot. (${item.nota_surtido})`
-                                : 'Bot. Suelta'}{' '}
-                              · {formatearBs(item.precio_aplicado)} (
-                              {item.escala_aplicada})
-                            </div>
-                            {item.aviso_bonificacion && (
-                              <div className="text-[10px] font-semibold text-amber-700 mt-0.5">
-                                {item.aviso_bonificacion}
-                              </div>
-                            )}
-                          </div>
-                          <span className="font-extrabold text-slate-900 shrink-0">
-                            {formatearBs(item.subtotal)}
-                          </span>
-                        </div>
-                      )
-                    })}
-                  </div>
+                  {/* Tabla limpia y directa del Ticket de Caja */}
+                  <OrderSummaryTable
+                    detalles={resumenPos.detalles}
+                    onCambiarCantidad={actualizarCantidadPos}
+                    onQuitarLinea={quitarLineaDelTicketPos}
+                    onEditarSurtido={(grp) => setGrupoSurtidoModalPos(grp)}
+                    maxHeightClass="max-h-60"
+                  />
 
                   {resumenPos.ahorroMayoristaBs > 0 && (
-                    <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-bold flex justify-between">
-                      <span>Ahorro Escala Mayorista:</span>
+                    <div className="px-3 py-2 rounded-xl bg-emerald-500/12 border border-emerald-500/25 text-emerald-700 dark:text-emerald-300 text-xs font-bold flex justify-between tabular-nums">
+                      <span>Ahorro Mayorista</span>
                       <span>-{formatearBs(resumenPos.ahorroMayoristaBs)}</span>
                     </div>
                   )}
 
                   {/* Selector de Método de Pago en la misma ventana */}
-                  <div className="pt-2 border-t border-slate-100 space-y-2.5">
-                    <span className="text-xs font-bold text-slate-700 block">
+                  <div className="pt-2 border-t border-slate-100 dark:border-white/[0.08] space-y-2.5">
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
                       Método de Pago:
                     </span>
                     <div className="grid grid-cols-4 gap-1.5">
                       <button
                         type="button"
                         onClick={() => setMetodoPago('efectivo')}
-                        className={`py-2 px-1 rounded-xl border text-[11px] font-bold flex flex-col items-center gap-1 cursor-pointer ${
+                        className={`py-2 px-1 rounded-xl border text-[11px] font-bold flex flex-col items-center gap-1 cursor-pointer transition ${
                           metodoPago === 'efectivo'
-                            ? 'bg-slate-900 text-amber-400 border-slate-900'
-                            : 'bg-slate-50 text-slate-700 border-slate-200'
+                            ? 'bg-slate-900 dark:bg-amber-500 text-amber-400 dark:text-slate-950 border-slate-900 dark:border-amber-500'
+                            : 'bg-slate-50 dark:bg-white/[0.04] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-white/10'
                         }`}
                       >
                         <Banknote className="w-4 h-4" />
@@ -1170,10 +1231,10 @@ export default function CajaCentralPage() {
                       <button
                         type="button"
                         onClick={() => setMetodoPago('qr')}
-                        className={`py-2 px-1 rounded-xl border text-[11px] font-bold flex flex-col items-center gap-1 cursor-pointer ${
+                        className={`py-2 px-1 rounded-xl border text-[11px] font-bold flex flex-col items-center gap-1 cursor-pointer transition ${
                           metodoPago === 'qr'
-                            ? 'bg-slate-900 text-amber-400 border-slate-900'
-                            : 'bg-slate-50 text-slate-700 border-slate-200'
+                            ? 'bg-slate-900 dark:bg-amber-500 text-amber-400 dark:text-slate-950 border-slate-900 dark:border-amber-500'
+                            : 'bg-slate-50 dark:bg-white/[0.04] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-white/10'
                         }`}
                       >
                         <QrCode className="w-4 h-4" />
@@ -1183,10 +1244,10 @@ export default function CajaCentralPage() {
                       <button
                         type="button"
                         onClick={() => setMetodoPago('mixto')}
-                        className={`py-2 px-1 rounded-xl border text-[11px] font-bold flex flex-col items-center gap-1 cursor-pointer ${
+                        className={`py-2 px-1 rounded-xl border text-[11px] font-bold flex flex-col items-center gap-1 cursor-pointer transition ${
                           metodoPago === 'mixto'
-                            ? 'bg-slate-900 text-amber-400 border-slate-900'
-                            : 'bg-slate-50 text-slate-700 border-slate-200'
+                            ? 'bg-slate-900 dark:bg-amber-500 text-amber-400 dark:text-slate-950 border-slate-900 dark:border-amber-500'
+                            : 'bg-slate-50 dark:bg-white/[0.04] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-white/10'
                         }`}
                       >
                         <Split className="w-4 h-4" />
@@ -1196,10 +1257,10 @@ export default function CajaCentralPage() {
                       <button
                         type="button"
                         onClick={() => setMetodoPago('credito')}
-                        className={`py-2 px-1 rounded-xl border text-[11px] font-bold flex flex-col items-center gap-1 cursor-pointer ${
+                        className={`py-2 px-1 rounded-xl border text-[11px] font-bold flex flex-col items-center gap-1 cursor-pointer transition ${
                           metodoPago === 'credito'
                             ? 'bg-amber-500 text-slate-950 border-amber-500'
-                            : 'bg-slate-50 text-slate-700 border-slate-200'
+                            : 'bg-slate-50 dark:bg-white/[0.04] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-white/10'
                         }`}
                       >
                         <CreditCard className="w-4 h-4" />
@@ -1208,9 +1269,9 @@ export default function CajaCentralPage() {
                     </div>
 
                     {/* Montos desglosados */}
-                    <div className="grid grid-cols-3 gap-2 p-3 rounded-xl bg-slate-50 border border-slate-200/80">
+                    <div className="grid grid-cols-3 gap-2 p-3 rounded-xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200/80 dark:border-white/[0.08]">
                       <div>
-                        <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                        <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 mb-1">
                           Efectivo (Bs)
                         </label>
                         <input
@@ -1219,12 +1280,12 @@ export default function CajaCentralPage() {
                           min="0"
                           value={inputEfectivo}
                           onChange={(e) => setInputEfectivo(e.target.value)}
-                          className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-slate-200 text-xs font-extrabold text-slate-900"
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#11141B] border border-slate-200 dark:border-white/10 text-xs font-extrabold text-slate-900 dark:text-white tabular-nums"
                         />
                       </div>
 
                       <div>
-                        <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                        <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-400 mb-1">
                           QR (Bs)
                         </label>
                         <input
@@ -1233,15 +1294,15 @@ export default function CajaCentralPage() {
                           min="0"
                           value={inputQr}
                           onChange={(e) => setInputQr(e.target.value)}
-                          className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-slate-200 text-xs font-extrabold text-slate-900"
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#11141B] border border-slate-200 dark:border-white/10 text-xs font-extrabold text-slate-900 dark:text-white tabular-nums"
                         />
                       </div>
 
                       <div>
-                        <label className="block text-[10px] font-bold text-amber-800 mb-1">
+                        <label className="block text-[10px] font-bold text-amber-700 dark:text-amber-400 mb-1">
                           Crédito
                         </label>
-                        <div className="px-2.5 py-1.5 rounded-lg bg-amber-500/15 border border-amber-300 text-xs font-extrabold text-amber-950">
+                        <div className="px-2.5 py-1.5 rounded-lg bg-amber-500/15 border border-amber-500/35 text-xs font-extrabold text-amber-800 dark:text-amber-300 tabular-nums">
                           {formatearBs(saldoCreditoCalculado)}
                         </div>
                       </div>
@@ -1249,11 +1310,16 @@ export default function CajaCentralPage() {
                   </div>
 
                   {/* Total y Botón Principal "Cobrar y Entregar en Tienda" */}
-                  <div className="p-4 rounded-xl bg-slate-900 text-white flex items-center justify-between">
-                    <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
-                      Total a Cobrar
-                    </span>
-                    <span className="text-xl font-extrabold text-amber-400">
+                  <div className="p-3.5 rounded-xl bg-slate-900 dark:bg-[#11141B] border border-slate-800 dark:border-white/10 text-white flex items-center justify-between">
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                        Total a Cobrar
+                      </div>
+                      <div className="text-xs font-medium text-slate-300 mt-0.5 tabular-nums">
+                        {formatearResumenUnidadesPedido(resumenPos)}
+                      </div>
+                    </div>
+                    <span className="text-xl font-extrabold text-amber-400 tabular-nums">
                       {formatearBs(resumenPos.totalBs)}
                     </span>
                   </div>
@@ -1278,56 +1344,59 @@ export default function CajaCentralPage() {
 
           {/* Mini Historial de Ventas Directas Recientes en Tienda Central */}
           {ventasHoy.length > 0 && (
-            <div className="bg-white rounded-2xl border border-slate-200/80 shadow-2xs p-4 space-y-2.5">
-              <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                Últimas Ventas en Tienda Central ({ventasHoy.length})
+            <div className="bg-white dark:bg-[#161922] rounded-2xl border border-slate-200/80 dark:border-white/8 shadow-2xs overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-slate-100 dark:border-white/8 flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                  Últimas Ventas en Tienda ({ventasHoy.length})
+                </span>
               </div>
-              <div className="max-h-48 overflow-y-auto divide-y divide-slate-100">
-                {ventasHoy.slice(0, 8).map((v) => (
-                  <div
-                    key={v.id}
-                    className="py-2 flex items-center justify-between gap-2 text-xs"
-                  >
-                    <div className="min-w-0">
-                      <div className="font-bold text-slate-900 truncate">
-                        {v.clientes?.nombre || 'Cliente Mostrador'} ·{' '}
-                        <span className="font-mono text-[11px] text-slate-500">
-                          {v.codigo_local}
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-slate-500">
-                        Efec: {formatearBs(v.monto_efectivo)} · QR:{' '}
-                        {formatearBs(v.monto_qr)}
-                        {Number(v.saldo_credito) > 0
-                          ? ` · Créd: ${formatearBs(v.saldo_credito)}`
-                          : ''}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="font-extrabold text-slate-900">
-                        {formatearBs(v.total)}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          generarYCompartirPDF(
-                            v,
-                            v.clientes || {
-                              nombre: 'Cliente Mostrador / Venta Rápida',
-                            },
-                            v.venta_detalles,
-                            v.perfiles?.nombre || 'Caja Central',
-                            false
-                          )
-                        }
-                        title="Descargar recibo PDF"
-                        className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-900 text-slate-700 hover:text-amber-400 cursor-pointer"
+              <div className="max-h-52 overflow-y-auto">
+                <table className="w-full text-left border-collapse">
+                  <tbody className="divide-y divide-slate-100 dark:divide-white/6 text-xs">
+                    {ventasHoy.slice(0, 8).map((v) => (
+                      <tr
+                        key={v.id}
+                        className="hover:bg-slate-50/70 dark:hover:bg-white/[0.02] transition-colors"
                       >
-                        <Download className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                        <td className="px-3.5 py-2.5">
+                          <div className="font-bold text-slate-900 dark:text-slate-100 truncate max-w-[150px]">
+                            {v.clientes?.nombre || 'Cliente Mostrador'}
+                          </div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400 tabular-nums">
+                            Efec: {formatearBs(v.monto_efectivo)} · QR:{' '}
+                            {formatearBs(v.monto_qr)}
+                            {Number(v.saldo_credito) > 0
+                              ? ` · Créd: ${formatearBs(v.saldo_credito)}`
+                              : ''}
+                          </div>
+                        </td>
+                        <td className="px-2 py-2.5 text-right font-extrabold text-slate-900 dark:text-white tabular-nums whitespace-nowrap">
+                          {formatearBs(v.total)}
+                        </td>
+                        <td className="pl-1 pr-3 py-2.5 text-right w-8">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              generarYCompartirPDF(
+                                v,
+                                v.clientes || {
+                                  nombre: 'Cliente Mostrador / Venta Rápida',
+                                },
+                                v.venta_detalles,
+                                v.perfiles?.nombre || 'Caja Central',
+                                false
+                              )
+                            }
+                            title="Descargar recibo PDF"
+                            className="p-1.5 rounded-lg bg-slate-100 dark:bg-white/6 hover:bg-slate-900 dark:hover:bg-amber-500 text-slate-700 dark:text-slate-300 hover:text-amber-400 dark:hover:text-slate-950 cursor-pointer transition"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
